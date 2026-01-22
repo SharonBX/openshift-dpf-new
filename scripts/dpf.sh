@@ -432,7 +432,7 @@ function apply_dpf() {
     log "INFO" "Cluster is accessible, proceeding with DPF deployment..."
     
     # Deploy ArgoCD and Maintenance Operator for DPF v25.7+
-    if [[ "$DPF_VERSION" =~ ^v25\.[7-9] ]] || [[ "$DPF_VERSION" =~ ^v2[6-9] ]]; then
+    if [[ "$DPF_VERSION" =~ ^v25\.[7-9]|10 ]] || [[ "$DPF_VERSION" =~ ^v2[6-9] ]]; then
         log [INFO] "DPF version $DPF_VERSION requires ArgoCD and Maintenance Operator"
         deploy_argocd
         deploy_maintenance_operator
