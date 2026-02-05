@@ -33,7 +33,7 @@ WORKER_SCRIPT := scripts/worker.sh
         add-worker-nodes worker-status approve-worker-csrs \
         deploy-csr-approver delete-csr-approver deploy-dpucluster-csr-approver delete-dpucluster-csr-approver \
         verify-deployment verify-workers verify-dpu-nodes verify-dpudeployment \
-        run-traffic-flow-tests tft-setup tft-cleanup tft-show-config tft-results \
+        run-traffic-flow-tests tft-setup tft-cleanup tft-show-config tft-results aicli-list \
         generate-env
 
 all: 
@@ -53,6 +53,9 @@ verify-files:
 clean:
 	@$(CLUSTER_SCRIPT) clean
 
+aicli-list:
+	@bash -c 'source scripts/env.sh && aicli list clusters'
+	
 delete-cluster:
 	@$(CLUSTER_SCRIPT) delete-cluster
 
