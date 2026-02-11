@@ -1,8 +1,8 @@
-# Include environment variables
+# Include environment variables (skip for generate-env so it starts clean)
+ifeq ($(filter generate-env,$(MAKECMDGOALS)),)
 include .env
-
-# Export variables to child processes
 export
+endif
 
 # Script paths
 CLUSTER_SCRIPT := scripts/cluster.sh
@@ -33,7 +33,8 @@ WORKER_SCRIPT := scripts/worker.sh
         add-worker-nodes worker-status approve-worker-csrs \
         deploy-csr-approver delete-csr-approver deploy-dpucluster-csr-approver delete-dpucluster-csr-approver \
         verify-deployment verify-workers verify-dpu-nodes verify-dpudeployment \
-        run-traffic-flow-tests tft-setup tft-cleanup tft-show-config tft-results
+        run-traffic-flow-tests tft-setup tft-cleanup tft-show-config tft-results \
+        generate-env
 
 all: 
 	@mkdir -p logs
@@ -261,6 +262,22 @@ verify-dpu-nodes:
 
 verify-dpudeployment:
 	@$(VERIFY_SCRIPT) verify-dpudeployment
+
+FORCE ?= false
+generate-env:
+	@if [ -f .env ] && [ "$(FORCE)" != "true" ]; then \
+		echo "ERROR: .env already exists. To overwrite, run:  make generate-env FORCE=true"; \
+		exit 1; \
+	fi
+	@echo "Generating .env from ci/env.defaults + ci/env.template..."
+	@bash -c '\
+		set -e; \
+		set -a; \
+		source ci/env.defaults; \
+		set +a; \
+		source ci/env.required; \
+		envsubst < ci/env.template > .env; \
+	'
 
 help:
 	@echo "Available targets:"
