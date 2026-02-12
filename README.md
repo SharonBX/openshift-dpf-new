@@ -91,6 +91,7 @@ make all
 | **[Configuration](docs/user-guide/configuration.md)** | Environment variables |
 | **[Worker Provisioning](docs/user-guide/worker-provisioning.md)** | Add physical worker nodes |
 | **[Troubleshooting](docs/user-guide/troubleshooting.md)** | Fix common issues |
+| **[External storage](docs/user-guide/external-storage-requirements.md)** | SKIP_DEPLOY_STORAGE and storage requirements |
 
 ## ⚙️ Deployment Types
 
