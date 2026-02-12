@@ -22,6 +22,7 @@ This automation handles the complete deployment lifecycle:
 | **[Worker Provisioning](worker-provisioning.md)** | Adding worker nodes with DPUs | Scaling clusters |
 | **[Troubleshooting](troubleshooting.md)** | Common issues and solutions | When things go wrong |
 | **[Advanced Topics](advanced-topics.md)** | Performance tuning and customization | Power users |
+| **[External storage requirements](external-storage-requirements.md)** | SKIP_DEPLOY_STORAGE, LVM/ODF vs your own StorageClass | Using external or mock storage |
 
 ## Supported Deployment Types
 
