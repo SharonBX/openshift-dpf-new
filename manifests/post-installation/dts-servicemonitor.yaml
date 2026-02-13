@@ -1,0 +1,26 @@
+# ServiceMonitor for doca-telemetry-service (DTS) metrics
+# Discovers DTS services dynamically using relabeling to match any service
+# whose dpuservice-name label starts with "doca-telemetry-service",
+# regardless of the generated suffix (e.g., doca-telemetry-service-bqvp6).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: doca-telemetry-service-monitor
+  namespace: dpf-operator-system
+spec:
+  selector:
+    matchExpressions:
+      - key: dpu.nvidia.com/dpuservice-name
+        operator: Exists
+  endpoints:
+    - port: httpserverport
+      interval: 30s
+      path: /metrics
+      relabelings:
+        - sourceLabels:
+            - __meta_kubernetes_service_label_dpu_nvidia_com_dpuservice_name
+          regex: doca-telemetry-service.*
+          action: keep
+  namespaceSelector:
+    matchNames:
+      - dpf-operator-system
