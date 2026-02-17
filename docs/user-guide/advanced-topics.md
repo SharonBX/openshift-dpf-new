@@ -34,7 +34,6 @@ NODES_MTU=9000  # Add to .env file
 ```bash
 # Optimize SR-IOV VF allocation for your workload
 NUM_VFS=32                    # Reduce if not using all VFs
-DPU_INTERFACE=ens7f0np0      # Verify correct DPU interface
 DPU_OVN_VF=ens7f0v1          # First VF for OVN-Kubernetes
 
 # Advanced DPU network configuration
@@ -160,7 +159,6 @@ VCPUS=32                      # Maximum CPU for compute
 # HPC DPU optimization
 NUM_VFS=64                    # Maximum VFs for HPC networking
 NODES_MTU=9000               # Jumbo frames for HPC traffic
-DPU_INTERFACE=ens7f0np0      # High-speed DPU interface
 ```
 
 ## Integration and Automation
