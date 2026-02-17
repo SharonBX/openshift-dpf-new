@@ -235,6 +235,10 @@ adapt_bridge_mtu() {
   nmcon=$(nmcli -t -f NAME c s | grep -- "-${BRIDGE_NAME}$" || true)
   for con in $nmcon; do
     cur_mtu=$(nmcli -g 802-3-ethernet.mtu connection show "$con")
+    if [ "$cur_mtu" -gt "$NODES_MTU" ]; then
+       echo "Current MTU $cur_mtu is greater than desired $NODES_MTU, not changing."
+       return
+    fi
     if [ "$cur_mtu" != "$NODES_MTU" ]; then
        echo "Modifying connection '$con' mtu to $NODES_MTU from current $cur_mtu"
        nmcli con modify "$con" mtu "$NODES_MTU" || true
