@@ -251,10 +251,6 @@ prepare_dpf_manifests() {
       exit 1
     fi
 
-    if [ -z "$DPU_INTERFACE" ]; then
-      echo "Error: DPU_INTERFACE must be set"
-      exit 1
-    fi
 
     # Create generated directory if it doesn't exist
     if [ ! -d "${GENERATED_DIR}" ]; then
@@ -432,7 +428,6 @@ function generate_ovn_manifests() {
         -e "s|<POD_CIDR>|$POD_CIDR|" \
         -e "s|<SERVICE_CIDR>|$SERVICE_CIDR|" \
         -e "s|<DPU_P0_VF1>|${DPU_OVN_VF:-ens7f0v1}|" \
-        -e "s|<DPU_P0>|$DPU_INTERFACE|" \
         -e "s|<OVN_KUBERNETES_IMAGE_REPO>|$OVN_KUBERNETES_IMAGE_REPO|" \
         -e "s|<OVN_KUBERNETES_IMAGE_TAG>|$OVN_KUBERNETES_IMAGE_TAG|" \
         -e "s|<OVN_KUBERNETES_UTILS_IMAGE_REPO>|$OVN_KUBERNETES_UTILS_IMAGE_REPO|" \

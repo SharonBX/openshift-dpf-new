@@ -353,7 +353,6 @@ help:
 	@echo "Network Configuration:"
 	@echo "  POD_CIDR         - Set pod CIDR (default: $(POD_CIDR))"
 	@echo "  SERVICE_CIDR     - Set service CIDR (default: $(SERVICE_CIDR))"
-	@echo "  DPU_INTERFACE    - Set DPU interface (default: $(DPU_INTERFACE))"
 	@echo "  API_VIP          - Set API VIP address"
 	@echo "  INGRESS_VIP      - Set Ingress VIP address"
 	@echo ""
