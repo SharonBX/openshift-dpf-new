@@ -12,6 +12,10 @@ spec:
   #Openshift multus is used for DPU cluster 
   multus:
     disable: true
+  cniInstaller:
+    # CNI installer isn't relevant for the OpenShift use case.
+    # In 25.10 it does not support the RHCOS BFB.
+    disable: true
   overrides:
     kubernetesAPIServerVIP: api.<CLUSTER_NAME>.<BASE_DOMAIN>
     kubernetesAPIServerPort: 6443
