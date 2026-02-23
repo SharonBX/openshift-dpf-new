@@ -508,8 +508,23 @@ def create_ignition_file(encoded_ign: str) -> dict:
     add_kernel_args(ign)
     add_files(ign)
     add_systemd_units(ign)
+    add_core_user_password(ign)
 
     return ign
+
+
+def add_core_user_password(ign: dict) -> None:
+    password_hash = os.environ.get('SET_CORE_OS_PASSWORD_TO_HASH')
+    if not password_hash:
+        return
+    ign['passwd'] = {
+        'users': [
+            {
+                'name': 'core',
+                'passwordHash': password_hash
+            }
+        ]
+    }
 
 
 def add_kernel_args(ign: dict) -> None:
