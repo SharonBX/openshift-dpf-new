@@ -50,12 +50,23 @@ function validate_vips() {
 }
 
 function is_valid_ip() {
-    local ip=$1
-    if [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || $ip =~ ^([0-9a-fA-F]*:[0-9a-fA-F]*){2,}$ ]]; then
-        return 0
-    else
+    local ip="$1"
+
+    if [[ "$ip" =~ [[:space:]] ]]; then
         return 1
     fi
+
+    if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        IFS='.' read -ra octets <<< "$ip"
+        for octet in "${octets[@]}"; do
+            if (( octet > 255 )); then
+                return 1
+            fi
+        done
+        return 0
+    fi
+
+    return 1
 }
 
 # -----------------------------------------------------------------------------
@@ -87,20 +98,130 @@ function check_cluster_installed() {
     return 1
 }
 
-function set_cluster_mtu() {
-    if ! [[ "$NODES_MTU" =~ ^[0-9]+$ ]]; then
-          log "ERROR" "NODES_MTU must be a positive integer, got: $NODES_MTU"
-          return 1
+function validate_static_ip_vars() {
+    for var in VM_EXT_IPS VM_EXT_PL VM_GW VM_DNS; do
+        if [[ -z "${!var}" ]]; then
+            log "ERROR" "VM_STATIC_IP is enabled but $var is not set"
+            return 1
+        fi
+    done
+
+    if ! [[ "$VM_EXT_PL" =~ ^([1-9]|[1-2][0-9]|3[0-2])$ ]]; then
+        log "ERROR" "VM_EXT_PL must be a valid prefix length (1-32), got: $VM_EXT_PL"
+        return 1
     fi
+}
+
+function validate_static_ips() {
+    IFS=',' read -ra IP_ARRAY <<< "$VM_EXT_IPS"
+    IP_ARRAY=("${IP_ARRAY[@]// /}")
+
+    if [[ "${#IP_ARRAY[@]}" -lt "$VM_COUNT" ]]; then
+        log "ERROR" "Not enough IPs in VM_EXT_IPS (got ${#IP_ARRAY[@]}, need $VM_COUNT)"
+        return 1
+    fi
+
+    for ip in "${IP_ARRAY[@]}"; do
+        if ! is_valid_ip "$ip"; then
+            log "ERROR" "Invalid IP address in VM_EXT_IPS: $ip"
+            return 1
+        fi
+    done
+}
+
+function validate_gw_dns() {
+    if ! is_valid_ip "$VM_GW"; then
+        log "ERROR" "Invalid IP for VM_GW: $VM_GW"
+        return 1
+    fi
+
+    IFS=',' read -ra DNS_ARRAY <<< "$VM_DNS"
+    DNS_ARRAY=("${DNS_ARRAY[@]// /}")
+
+    local dns_count=0
+    for dns_ip in "${DNS_ARRAY[@]}"; do
+        [[ -z "$dns_ip" ]] && continue
+        if ! is_valid_ip "$dns_ip"; then
+            log "ERROR" "Invalid IP in VM_DNS: $dns_ip"
+            return 1
+        fi
+        ((dns_count++)) || true
+    done
+
+    if [[ "$dns_count" -eq 0 ]]; then
+        log "ERROR" "VM_DNS must contain at least one valid DNS server IP"
+        return 1
+    fi
+}
+
+function build_dns_yaml() {
+    DNS_SERVERS_YAML=""
+    IFS=',' read -ra DNS_ARRAY <<< "$VM_DNS"
+    DNS_ARRAY=("${DNS_ARRAY[@]// /}")
+    for d in "${DNS_ARRAY[@]}"; do
+        [[ -z "$d" ]] && continue
+        DNS_SERVERS_YAML="${DNS_SERVERS_YAML}                - ${d}"$'\n'
+    done
+}
+
+function set_node_nmstate() {
+
     if [ -f "$STATIC_NET_FILE" ]; then
         rm "$STATIC_NET_FILE"
     fi
     echo "static_network_config:" >> "$STATIC_NET_FILE"
 
+    if [[ "${VM_STATIC_IP}" == "true" ]]; then
+        validate_static_ip_vars || return 1
+        validate_static_ips     || return 1
+        validate_gw_dns         || return 1
+        build_dns_yaml
+
+        IFS=',' read -ra IP_ARRAY <<< "$VM_EXT_IPS"
+        IP_ARRAY=("${IP_ARRAY[@]// /}")
+
+        for i in $(seq 1 "$VM_COUNT"); do
+            VM_NAME="${VM_PREFIX}${i}"
+            NODE_IP="${IP_ARRAY[$((i-1))]}"
+
+            if ! UNIQUE_MAC=$(generate_mac_from_machine_id "$VM_NAME"); then
+                log "ERROR" "Failed to generate MAC for $VM_NAME"
+                return 1
+            fi
+
+            log "INFO" "Set MAC: $UNIQUE_MAC, Static IP: $NODE_IP/${VM_EXT_PL}, GW: $VM_GW, DNS: $VM_DNS, Will be set on VM: $VM_NAME"
+
+            cat << EOF >> "$STATIC_NET_FILE"
+        - interfaces:
+           - name: ${PRIMARY_IFACE}
+             type: ethernet
+             state: up
+             mtu: ${NODES_MTU}
+             mac-address: '${UNIQUE_MAC}'
+             ipv4:
+               enabled: true
+               dhcp: false
+               address:
+                 - ip: ${NODE_IP}
+                   prefix-length: ${VM_EXT_PL}
+          dns-resolver:
+            config:
+              server:
+${DNS_SERVERS_YAML}
+          routes:
+            config:
+              - destination: 0.0.0.0/0
+                next-hop-address: ${VM_GW}
+                next-hop-interface: ${PRIMARY_IFACE}
+EOF
+        done
+        return 0
+    fi
+
+    # Default: DHCP mode
     for i in $(seq 1 "$VM_COUNT"); do
         VM_NAME="${VM_PREFIX}${i}"
 
-        # Use machine-id based MAC (default)
         if ! UNIQUE_MAC=$(generate_mac_from_machine_id "$VM_NAME"); then
             log "ERROR" "Failed to generate MAC for $VM_NAME"
             return 1
@@ -110,7 +231,7 @@ function set_cluster_mtu() {
 
         cat << EOF >> "$STATIC_NET_FILE"
         - interfaces: 
-           - name: ${PRIMARY_IFACE:-enp1s0}
+           - name: ${PRIMARY_IFACE}
              type: ethernet
              state: up
              mtu: ${NODES_MTU}
@@ -131,9 +252,7 @@ function check_create_cluster() {
         return 0
     fi
 
-    if [ "${NODES_MTU}" != "1500" ] ; then
-       set_cluster_mtu || return 1
-    fi
+    set_node_nmstate
 
     if ! aicli info cluster ${CLUSTER_NAME} >/dev/null 2>&1; then
         log "INFO" "Cluster ${CLUSTER_NAME} not found, creating..."
@@ -145,8 +264,9 @@ function check_create_cluster() {
                 -P base_dns_domain="${BASE_DOMAIN}" \
                 -P pull_secret="${OPENSHIFT_PULL_SECRET}" \
                 -P high_availability_mode=None \
+		-P public_key="${SSH_KEY}" \
                 -P user_managed_networking=True \
-		        $([ "${NODES_MTU}" != "1500" ] && echo "--paramfile ${STATIC_NET_FILE}") \
+		--paramfile "${STATIC_NET_FILE}" \
                 "${CLUSTER_NAME}"
         else
             log "INFO" "Creating multi-node cluster..."
@@ -160,7 +280,7 @@ function check_create_cluster() {
                 -P pull_secret="${OPENSHIFT_PULL_SECRET}" \
                 -P public_key="${SSH_KEY}" \
                 -P ingress_vips="${INGRESS_VIPS}" \
-		        $([ "${NODES_MTU}" != "1500" ] && echo "--paramfile ${STATIC_NET_FILE}") \
+                --paramfile "${STATIC_NET_FILE}" \
                 "${CLUSTER_NAME}"
         fi
         

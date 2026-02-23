@@ -74,7 +74,7 @@ function create_vms() {
         echo "$mac"
     }
 
-    if [ -f "$STATIC_NET_FILE" ] && [ "$NODES_MTU" != "1500" ]; then
+    if [ -f "$STATIC_NET_FILE" ]; then
         log "INFO" "Found static_net.yaml. Creating VMs based on file content."
         # parse the YAML into a JSON string
         VMS_CONFIG=$(python3 -c 'import yaml, json; print(json.dumps(yaml.safe_load(open("'"$STATIC_NET_FILE"'"))["static_network_config"]))')
