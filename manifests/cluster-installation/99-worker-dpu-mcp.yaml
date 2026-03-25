@@ -1,0 +1,16 @@
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: worker-dpu
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - key: machineconfiguration.openshift.io/role
+        operator: In
+        values:
+          - worker
+          - worker-dpu
+  nodeSelector:
+       matchExpressions:
+          - key: feature.node.kubernetes.io/dpu-enabled
+            operator: Exists

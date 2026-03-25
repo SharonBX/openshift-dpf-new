@@ -51,7 +51,7 @@ kind: MachineConfig
 metadata:
   name: 99-mtu-worker
   labels:
-    machineconfiguration.openshift.io/role: worker
+    machineconfiguration.openshift.io/role: worker-dpu
 spec:
   config:
     ignition:
