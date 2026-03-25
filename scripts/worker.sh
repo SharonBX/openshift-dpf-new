@@ -25,7 +25,7 @@ provision_all_workers() {
     apply_short_worker_hostnames
 
     # Apply custom node labels MachineConfig if configured
-    apply_worker_node_labels
+    # apply_worker_node_labels
 
     # BMO is pre-installed in OpenShift - verify it's available
     if ! oc get clusteroperator baremetal &>/dev/null; then
