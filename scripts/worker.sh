@@ -49,21 +49,6 @@ provision_all_workers() {
     local is_sno=false
     [[ "${VM_COUNT:-0}" -eq 1 ]] && is_sno=true
 
-    # Create shared MachineSet for DPU workers (only in non-SNO environments)
-    if [[ "$is_sno" == "false" ]]; then
-        # Create shared MachineSet if we have DPU workers and not SNO
-        if [[ $dpu_count -gt 0 ]]; then
-            log "INFO" "Creating/updating shared MachineSet for $dpu_count DPU worker(s)..."
-            sed "s/replicas: 1/replicas: $dpu_count/" \
-                "${WORKER_TEMPLATE_DIR}/machineset-dpu.yaml" \
-                > "${WORKER_GENERATED_DIR}/machineset-dpu.yaml"
-            retry 5 10 apply_manifest "${WORKER_GENERATED_DIR}/machineset-dpu.yaml" true
-
-        fi
-    else
-        log "INFO" "SNO environment detected (VM_COUNT=1), skipping MachineSet creation (Machine API in NoOp mode)"
-    fi
-
     for i in $(seq 1 "$count"); do
         local name_var="WORKER_${i}_NAME"
         local name="${!name_var}"
@@ -215,20 +200,6 @@ delete_csr_auto_approver() {
     log "INFO" "CSR auto-approver removed"
 }
 
-# Helper function to decrease MachineSet replica count
-decrease_machineset_replicas() {
-    log "INFO" "Updating MachineSet replica count to prevent recreation..."
-    local current_replicas
-    current_replicas=$(oc get machinesets.machine.openshift.io worker-dpu -n openshift-machine-api -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
-
-    if [[ "$current_replicas" -gt 0 ]]; then
-        local new_replicas=$((current_replicas - 1))
-        log "INFO" "Decreasing MachineSet replicas: $current_replicas → $new_replicas"
-        oc patch machinesets.machine.openshift.io worker-dpu -n openshift-machine-api --type=merge -p "{\"spec\":{\"replicas\":$new_replicas}}"
-    else
-        log "WARN" "MachineSet worker-dpu has 0 replicas or not found"
-    fi
-}
 
 # Helper function to delete BMH with automated cleaning disabled
 delete_bmh_with_cleanup() {
@@ -254,132 +225,72 @@ delete_bmh_with_cleanup() {
     fi
 }
 
-# Helper function to warn about manual node deletion
-warn_manual_node_deletion() {
-    log "WARN" "*** IMPORTANT: You must manually delete the OpenShift Node object ***"
-    log "WARN" "*** Run: oc get nodes (find the node) then: oc delete node <node-name> ***"
+# Helper function to delete the OpenShift Node object
+delete_node() {
+    local node_name="$1"
+    if [[ -z "$node_name" ]]; then
+        log "WARN" "Node name not resolved, skipping node deletion"
+        log "WARN" "You may need to manually delete the Node: oc get nodes && oc delete node <name>"
+        return 0
+    fi
+
+    if oc get node "$node_name" &>/dev/null; then
+        log "INFO" "Deleting Node: $node_name"
+        oc delete node "$node_name"
+        log "INFO" "Node $node_name deleted"
+    else
+        log "INFO" "Node $node_name not found, skipping"
+    fi
 }
 
 delete_worker() {
     local input_name="${1:-}"
-    [[ -z "$input_name" ]] && { log "ERROR" "Worker name required. Usage: $0 delete-worker <bmh-name|machine-name>"; return 1; }
+    [[ -z "$input_name" ]] && { log "ERROR" "Worker name required. Usage: $0 delete-worker <bmh-name|node-name>"; return 1; }
 
     get_kubeconfig
 
-    log "INFO" "Identifying worker type for: $input_name"
+    log "INFO" "Identifying worker for: $input_name"
 
-    # Try to identify what type of name was provided and find the BMH name
     local bmh_name=""
-    local machine_name=""
+    local node_name=""
 
     # Check if it's a BMH name
     if oc get bmh -n openshift-machine-api "$input_name" &>/dev/null; then
         bmh_name="$input_name"
         log "INFO" "Identified as BareMetalHost: $bmh_name"
 
-        # Get Machine consuming this BMH
-        machine_name=$(oc get machines.machine.openshift.io -n openshift-machine-api -o json 2>/dev/null | \
-            jq -r --arg bmh "$bmh_name" \
-            '.items[] | select((.metadata.annotations."metal3.io/BareMetalHost" // "" | split("/") | last) == $bmh) | .metadata.name' 2>/dev/null | head -1)
+        # Get node name from BMH status.hardware.hostname
+        node_name=$(oc get bmh -n openshift-machine-api "$bmh_name" -o jsonpath='{.status.hardware.hostname}' 2>/dev/null || true)
 
-    # Check if it's a Machine name
-    elif oc get machines.machine.openshift.io -n openshift-machine-api "$input_name" &>/dev/null; then
-        machine_name="$input_name"
-        log "INFO" "Identified as Machine: $machine_name"
+    # Check if it's a Node name — find BMH via matching hardware.hostname
+    elif oc get node "$input_name" &>/dev/null; then
+        node_name="$input_name"
+        log "INFO" "Identified as Node: $node_name"
 
-        # Get BMH from Machine annotation
-        bmh_name=$(oc get machines.machine.openshift.io -n openshift-machine-api "$machine_name" -o json 2>/dev/null | \
-            jq -r '.metadata.annotations."metal3.io/BareMetalHost" // ""' | sed 's|.*/||' 2>/dev/null || true)
+        # Find BMH with this hostname in status.hardware (BMH.status.hardware.hostname matches Node name)
+        bmh_name=$(oc get bmh -n openshift-machine-api -o json 2>/dev/null | \
+            jq -r --arg node "$node_name" \
+            '.items[] | select(.status.hardware.hostname == $node) | .metadata.name' 2>/dev/null | head -1)
+
+        if [[ -z "$bmh_name" ]]; then
+            log "WARN" "Could not find BMH for node: $node_name (may already be deleted)"
+        fi
 
     else
-        log "ERROR" "Could not find BareMetalHost or Machine named: $input_name"
+        log "ERROR" "Could not find BareMetalHost or Node named: $input_name"
         return 1
     fi
 
-    log "INFO" "Worker mapping - BMH: ${bmh_name:-none}, Machine: ${machine_name:-none}"
-
     [[ -z "$bmh_name" ]] && { log "ERROR" "Could not determine BareMetalHost name"; return 1; }
 
-    # Find worker index and check if it's a DPU worker
-    local worker_index=""
-    local is_dpu="false"
-    for i in $(seq 1 "${WORKER_COUNT:-0}"); do
-        local name_var="WORKER_${i}_NAME"
-        if [[ "${!name_var}" == "$bmh_name" ]]; then
-            worker_index=$i
-            local dpu_var="WORKER_${i}_DPU"
-            is_dpu="${!dpu_var:-true}"
-            break
-        fi
-    done
+    log "INFO" "Worker mapping - BMH: $bmh_name, Node: ${node_name:-unknown}"
 
-    if [[ -z "$worker_index" ]]; then
-        log "WARN" "Worker $bmh_name not found in environment variables"
-        # Try to detect if it's DPU by checking if Machine has the dpu-capable selector
-        if [[ -n "$machine_name" ]]; then
-            local has_dpu_label
-            has_dpu_label=$(oc get machines.machine.openshift.io -n openshift-machine-api "$machine_name" -o json 2>/dev/null | \
-                jq -r '.spec.providerSpec.value.hostSelector.matchLabels."dpu-capable" // "false"')
-            [[ "$has_dpu_label" == "true" ]] && is_dpu="true"
-        fi
-    fi
+    # Delete BMH (handles all workers uniformly now — no MachineSet)
+    log "INFO" "Deleting worker: $bmh_name"
+    delete_bmh_with_cleanup "$bmh_name"
 
-    log "INFO" "Deleting worker: $bmh_name (DPU: $is_dpu)"
-
-    # Handle DPU workers (managed by MachineSet)
-    if [[ "$is_dpu" == "true" ]]; then
-        log "INFO" "DPU worker detected, managing Machine and MachineSet..."
-
-        # STEP 1: Disable automated cleaning on BMH FIRST (before triggering any deprovisioning)
-        if oc get bmh -n openshift-machine-api "$bmh_name" &>/dev/null; then
-            log "INFO" "Disabling automated cleaning for BMH: $bmh_name (to skip IPA reboot)"
-            oc patch bmh "$bmh_name" -n openshift-machine-api -p '{"spec":{"automatedCleaningMode":"disabled"}}' --type=merge || \
-                log "WARN" "Failed to disable automated cleaning, continuing..."
-        fi
-
-        # STEP 2 & 3: Delete specific Machine and immediately decrease replicas (minimize race window)
-        if [[ -n "$machine_name" ]]; then
-            log "INFO" "Deleting Machine: $machine_name and decreasing MachineSet replicas"
-            oc delete machines.machine.openshift.io -n openshift-machine-api "$machine_name" --wait=false
-
-            # Immediately decrease replica count to prevent MachineSet from recreating
-            decrease_machineset_replicas
-
-            log "INFO" "Waiting for Machine deletion (this may take up to 15 minutes)..."
-            if ! retry 60 15 bash -c "! oc get machines.machine.openshift.io -n openshift-machine-api '$machine_name' &>/dev/null"; then
-                log "ERROR" "Timed out waiting for Machine $machine_name deletion"
-                return 1
-            fi
-        else
-            log "WARN" "No Machine found associated with BMH $bmh_name"
-            # Still decrease replica count even if Machine not found
-            decrease_machineset_replicas
-        fi
-
-        # STEP 4: Delete BMH if it still exists (cleaning already disabled in step 1)
-        if oc get bmh -n openshift-machine-api "$bmh_name" &>/dev/null; then
-            log "INFO" "Deleting BareMetalHost: $bmh_name"
-            oc delete bmh -n openshift-machine-api "$bmh_name" --wait=false
-
-            log "INFO" "Waiting for BMH deletion (this may take up to 15 minutes)..."
-            if ! retry 60 15 bash -c "! oc get bmh -n openshift-machine-api '$bmh_name' &>/dev/null"; then
-                log "ERROR" "Timed out waiting for BMH $bmh_name deletion"
-                return 1
-            fi
-
-            log "INFO" "BMC secret will be automatically deleted (ownerReference to BMH)"
-        else
-            log "INFO" "BareMetalHost $bmh_name already deleted (consumed by Machine)"
-        fi
-
-        warn_manual_node_deletion
-
-    # Handle regular (non-DPU) workers
-    else
-        log "INFO" "Regular worker detected (no MachineSet management)"
-        delete_bmh_with_cleanup "$bmh_name"
-        warn_manual_node_deletion
-    fi
+    # Delete the node if it exists
+    delete_node "$node_name"
 
     log "INFO" "Worker $bmh_name deletion completed"
 }
@@ -395,7 +306,7 @@ case "${1:-}" in
     delete-csr-auto-approver) delete_csr_auto_approver ;;
     delete-worker) delete_worker "${2:-}" ;;
     *)
-        echo "Usage: $0 {provision-all-workers|approve-worker-csrs|display-worker-status|display-manual-csr-instructions|apply-short-worker-hostnames|deploy-csr-auto-approver|delete-csr-auto-approver|delete-worker <bmh-name|machine-name>}"
+        echo "Usage: $0 {provision-all-workers|approve-worker-csrs|display-worker-status|display-manual-csr-instructions|apply-short-worker-hostnames|deploy-csr-auto-approver|delete-csr-auto-approver|delete-worker <bmh-name|machine-name|node-name>}"
         exit 1
         ;;
 esac

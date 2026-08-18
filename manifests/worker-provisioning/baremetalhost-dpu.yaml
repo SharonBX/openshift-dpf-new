@@ -4,10 +4,8 @@ kind: BareMetalHost
 metadata:
   name: <WORKER_NAME>
   namespace: openshift-machine-api
-  labels:
-    dpu-capable: "true"
 spec:
-  online: false
+  online: true
   bootMACAddress: <BOOT_MAC>
   rootDeviceHints:
     deviceName: <ROOT_DEVICE>
@@ -15,3 +13,9 @@ spec:
     address: redfish-virtualmedia+https://<BMC_IP>
     credentialsName: <WORKER_NAME>-bmc-secret
     disableCertificateVerification: true
+  customDeploy:
+    method: install_coreos
+  userData:
+    name: worker-dpu-user-data-managed
+    namespace: openshift-machine-api
+
