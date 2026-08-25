@@ -38,7 +38,7 @@ TFT_CONFIG_TEMPLATE="${SCRIPT_DIR}/../ci/tft-config.yaml.template"
 TFT_CONFIG_OUTPUT="${TFT_WORK_DIR}/tft-config.yaml"
 
 # Test Parameters (can be overridden via environment)
-TFT_TEST_CASES="${TFT_TEST_CASES:-1-25}"
+TFT_TEST_CASES="${TFT_TEST_CASES:-1-25,27,69}"
 TFT_DURATION="${TFT_DURATION:-10}"
 TFT_CONNECTION_TYPE="${TFT_CONNECTION_TYPE:-iperf-tcp}"
 
@@ -55,8 +55,9 @@ TFT_SECONDARY_RP_PFINDEX="${TFT_SECONDARY_RP_PFINDEX:-1}"
 TFT_SECONDARY_RP_VF_START="${TFT_SECONDARY_RP_VF_START:-1}"
 TFT_SECONDARY_RP_VF_END="${TFT_SECONDARY_RP_VF_END:-45}"
 # NodeSRIOVDevicePluginConfig object (namespace fixed by the DPF operator install).
+# Object name is verified/discovered at runtime; override only if auto-discovery is wrong.
 TFT_SRIOVDP_NAMESPACE="${TFT_SRIOVDP_NAMESPACE:-dpf-operator-system}"
-TFT_SRIOVDP_CONFIG_NAME="${TFT_SRIOVDP_CONFIG_NAME:-${SRIOV_DP_CONFIG_NAME:-}}"
+TFT_SRIOVDP_CONFIG_NAME="${TFT_SRIOVDP_CONFIG_NAME:-}"
 
 # Kubeconfig path (relative to working directory by default)
 TFT_KUBECONFIG="${TFT_KUBECONFIG:-$(pwd)/kubeconfig.${CLUSTER_NAME}}"
@@ -296,9 +297,12 @@ ensure_secondary_resource_pool() {
     # Short pool name = basename of the full resource name (openshift.io/bf3-p1-vfs -> bf3-p1-vfs)
     local pool="${TFT_RESOURCE_NAME##*/}"
 
-    # Resolve the NodeSRIOVDevicePluginConfig object name (discover the singleton if unset)
-    local cfg="${TFT_SRIOVDP_CONFIG_NAME}"
-    if [[ -z "${cfg}" ]]; then
+    local cfg="${TFT_SRIOVDP_CONFIG_NAME:-${SRIOV_DP_CONFIG_NAME:-}}"
+    if [[ -z "${cfg}" ]] || \
+       ! oc get nodesriovdevicepluginconfig "${cfg}" -n "${ns}" --kubeconfig="${kc}" &>/dev/null; then
+        if [[ -n "${cfg}" ]]; then
+            log "WARN" "NodeSRIOVDevicePluginConfig/${cfg} not found; discovering the object in ${ns}"
+        fi
         cfg=$(oc get nodesriovdevicepluginconfig -n "${ns}" --kubeconfig="${kc}" \
             -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     fi
@@ -367,6 +371,39 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# Gate the 2nd-interface test (27) to DPU hosts with the secondary SR-IOV profile
+# -----------------------------------------------------------------------------
+# Test 27 needs a DPU host node AND the secondary SR-IOV pool (TFT_RESOURCE_NAME).
+# Keep/add it only when both hold; otherwise strip it so a plain run never fails.
+adjust_secondary_test_cases() {
+    local kc="$1"
+
+    local wants27=false
+    case ",${TFT_TEST_CASES}," in *,27,*) wants27=true ;; esac
+
+    local has_dpu=false
+    if command -v oc &>/dev/null && \
+       oc get nodes -l 'k8s.ovn.org/dpu-host' --no-headers --kubeconfig="${kc}" 2>/dev/null | grep -q .; then
+        has_dpu=true
+    fi
+
+    if [[ -n "${TFT_RESOURCE_NAME}" && "${has_dpu}" == "true" ]]; then
+        if [[ "${wants27}" == "false" ]]; then
+            TFT_TEST_CASES="${TFT_TEST_CASES},27"
+            log "INFO" "Secondary SR-IOV profile active on a DPU host; added test 27"
+        fi
+    elif [[ "${wants27}" == "true" ]]; then
+        TFT_TEST_CASES="$(echo ",${TFT_TEST_CASES}," | sed 's/,27,/,/g; s/^,//; s/,$//')"
+        if [[ -z "${TFT_TEST_CASES}" ]]; then
+            log "ERROR" "Test 27 requires a DPU host and TFT_RESOURCE_NAME (secondary SR-IOV pool); nothing left to run"
+            return 1
+        fi
+        log "WARN" "Skipping test 27: requires a DPU host and TFT_RESOURCE_NAME (secondary SR-IOV pool)"
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # Generate Test Configuration
 # -----------------------------------------------------------------------------
 generate_config() {
@@ -386,7 +423,9 @@ generate_config() {
         log "ERROR" "TFT_SERVER_NODE and TFT_CLIENT_NODE must be set after discovery"
         return 1
     fi
-    
+
+    adjust_secondary_test_cases "${TFT_KUBECONFIG_ABS}" || return 1
+
     log "INFO" "Test configuration:"
     log "INFO" "  Test cases: ${TFT_TEST_CASES}"
     log "INFO" "  Duration: ${TFT_DURATION}s"
