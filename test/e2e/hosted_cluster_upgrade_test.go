@@ -37,9 +37,7 @@ var _ = Describe("Hosted Cluster Upgrade", Label("hosted-upgrade"), Ordered, fun
 		if cfg.UpgradeReleaseImage == "" {
 			Skip("--upgrade-release-image not provided, skipping hosted cluster upgrade test")
 		}
-		if dpfInput.NumberOfDPUNodes == 0 {
-			Skip("No DPU nodes available")
-		}
+		skipIfClusterNotReadyForDPUReprovisioning()
 	})
 
 	It("should record the current release image from DPFHCPProvisioner", func() {
@@ -274,7 +272,7 @@ var _ = Describe("Hosted Cluster Upgrade", Label("hosted-upgrade"), Ordered, fun
 	})
 
 	It("should have a healthy cluster after hosted cluster upgrade", func() {
-		waitForClusterHealth()
+		waitForClusterHealthAfterDPUReprovisioning()
 	})
 
 	AfterAll(func() {
