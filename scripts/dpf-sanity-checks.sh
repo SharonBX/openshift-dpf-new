@@ -220,7 +220,8 @@ check_ping_packet_loss() {
   PACKET_LOSS=$(echo "${output}" | grep -Eo '[0-9]+% packet loss' | awk '{print $1}' | tr -d '%')
 
   if [ -z "$PACKET_LOSS" ]; then
-    echo "Failed to extract packet loss from ping output"
+    echo "❌ Failed to extract packet loss from ping output. Raw output:"
+    echo "${output}"
     echo "Fail"
     ((failed_testcase_count++))
     return 1
@@ -418,7 +419,8 @@ check_hbn_bgp_neighbors() {
       not_established=$(echo "$all_states" | grep -ivw 'established' | grep -c . 2>/dev/null) || true
 
       if [ "${total_neighbors:-0}" -eq 0 ]; then
-        echo -e "${RED}Fail${NC} HBN BGP: no neighbors parsed on ${pod}"
+        echo -e "${RED}Fail${NC} HBN BGP: no neighbors parsed on ${pod}. Raw output:"
+        echo "${bgp_out}"
         bgp_result=1
       elif [ "${not_established}" -eq 0 ]; then
         echo -e "${GREEN}Pass${NC} HBN BGP: all ${total_neighbors} neighbor(s) established on ${pod}"
@@ -510,6 +512,8 @@ test_results_summary+="\n${testcase_title}: $(format_result "${result_check_ovn_
 
 testcase_title="Checking HBN BGP neighbors are established on hosted cluster"
 echo -e "\n${testcase_title}"
+echo "Waiting 30s for BGP sessions to stabilize..."
+sleep 30
 ((total_testcases_executed++))
 check_hbn_bgp_neighbors "${hosted_kubecfg}"
 result_check_bgp=$?
@@ -792,6 +796,26 @@ else
     -n "${SANITY_TESTS_OVN_NAMESPACE}" \
     --timeout=120s --kubeconfig="${mgmt_kubecfg}"
 
+  # Additional wait for web services to be up
+  echo "Waiting for OVN test services to respond..."
+  svc_ready=false
+  for i in $(seq 1 10); do
+    ovn_svc_ip=$(oc get svc web-svc -n "${SANITY_TESTS_OVN_NAMESPACE}" --kubeconfig="${mgmt_kubecfg}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
+    if [ -n "${ovn_svc_ip}" ]; then
+      if oc exec pod-a -n "${SANITY_TESTS_OVN_NAMESPACE}" --kubeconfig="${mgmt_kubecfg}" -- curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 4 "http://${ovn_svc_ip}:80" | grep -q "200"; then
+        echo "✅ web-svc is ready"
+        svc_ready=true
+        break
+      fi
+    fi
+    echo "Waiting for web-svc... (attempt $i/10)"
+    sleep 5
+  done
+
+  if [ "${svc_ready}" = "false" ]; then
+    echo "⚠️  web-svc did not become ready in time, continuing anyway..."
+  fi
+
   ovn_pod_a_ip=$(oc get pod pod-a -n "${SANITY_TESTS_OVN_NAMESPACE}" --kubeconfig="${mgmt_kubecfg}" \
     -o jsonpath='{.status.podIP}')
   ovn_pod_b_ip=$(oc get pod pod-b -n "${SANITY_TESTS_OVN_NAMESPACE}" --kubeconfig="${mgmt_kubecfg}" \
@@ -806,6 +830,12 @@ else
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 \
     | sed 's/\.[0-9]*$/.2/')
 
+  if [ -z "${ovn_node1_mp0}" ]; then
+    echo "❌ Failed to extract mp0 IP for ${dpu_host_workers[0]}. Node annotations:"
+    oc get node "${dpu_host_workers[0]}" --kubeconfig="${mgmt_kubecfg}" -o jsonpath='{.metadata.annotations}'
+    ((failed_testcase_count++))
+  fi
+
   if [ "${dpu_host_worker_count}" -ge 2 ]; then
     ovn_remote_ip=$(oc get pod pod-remote -n "${SANITY_TESTS_OVN_NAMESPACE}" --kubeconfig="${mgmt_kubecfg}" \
       -o jsonpath='{.status.podIP}')
@@ -813,6 +843,11 @@ else
       -o jsonpath='{.metadata.annotations.k8s\.ovn\.org/node-subnets}' \
       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 \
       | sed 's/\.[0-9]*$/.2/')
+    
+    if [ -z "${ovn_node2_mp0}" ]; then
+      echo "❌ Failed to extract mp0 IP for ${dpu_host_workers[1]}"
+      ((failed_testcase_count++))
+    fi
   fi
 
   echo -e "\nOVN test IPs:"
