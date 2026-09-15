@@ -29,10 +29,10 @@ func GetReadyNodes(ctx context.Context, c client.Client, matchLabels map[string]
 	return ready, nil
 }
 
-func GetReadyWorkerNodes(ctx context.Context, c client.Client) ([]corev1.Node, error) {
+func GetWorkerNodes(ctx context.Context, c client.Client) ([]corev1.Node, error) {
 	nodeList := &corev1.NodeList{}
 	if err := c.List(ctx, nodeList); err != nil {
-		return nil, fmt.Errorf("listing nodes: %w", err)
+		return nil, fmt.Errorf("listing worker nodes: %w", err)
 	}
 
 	var workers []corev1.Node
@@ -43,11 +43,24 @@ func GetReadyWorkerNodes(ctx context.Context, c client.Client) ([]corev1.Node, e
 		if _, isWorker := node.Labels["node-role.kubernetes.io/worker"]; !isWorker {
 			continue
 		}
-		if isNodeReady(node) {
-			workers = append(workers, node)
-		}
+		workers = append(workers, node)
 	}
 	return workers, nil
+}
+
+func GetReadyWorkerNodes(ctx context.Context, c client.Client) ([]corev1.Node, error) {
+	workers, err := GetWorkerNodes(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+
+	var readyWorkers []corev1.Node
+	for _, node := range workers {
+		if isNodeReady(node) {
+			readyWorkers = append(readyWorkers, node)
+		}
+	}
+	return readyWorkers, nil
 }
 
 func GetDPUEnabledNodes(ctx context.Context, c client.Client) ([]corev1.Node, error) {
