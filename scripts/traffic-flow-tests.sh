@@ -29,16 +29,15 @@ TFT_WORK_DIR="${TFT_WORK_DIR:-${SCRIPT_DIR}/../repos/kubernetes-traffic-flow-tes
 TFT_VENV_DIR="${TFT_WORK_DIR}/tft-venv"
 
 # Python Configuration
-# TFT requires Python 3.11 due to dataclass kw_only parameter
-TFT_PYTHON_VERSION="3.11"
-TFT_PYTHON="${TFT_PYTHON:-python${TFT_PYTHON_VERSION}}"
+# TFT requires Python >= 3.10 (dataclass kw_only parameter)
+TFT_PYTHON="${TFT_PYTHON:-python3}"
 
 # Test Configuration
 TFT_CONFIG_TEMPLATE="${SCRIPT_DIR}/../ci/tft-config.yaml.template"
 TFT_CONFIG_OUTPUT="${TFT_WORK_DIR}/tft-config.yaml"
 
 # Test Parameters (can be overridden via environment)
-TFT_TEST_CASES="${TFT_TEST_CASES:-1-25}"
+TFT_TEST_CASES="${TFT_TEST_CASES:-1-25,32-34,69}"
 TFT_DURATION="${TFT_DURATION:-10}"
 TFT_CONNECTION_TYPE="${TFT_CONNECTION_TYPE:-iperf-tcp}"
 
@@ -138,55 +137,22 @@ discover_tft_nodes() {
 }
 
 # -----------------------------------------------------------------------------
-# Ensure Python 3.11 is available (install if missing)
+# Ensure Python >= 3.10 is available
 # -----------------------------------------------------------------------------
 ensure_python() {
-    log "INFO" "Checking for Python ${TFT_PYTHON_VERSION}..."
-    
-    # Check if required Python version is available
-    if command -v "${TFT_PYTHON}" &>/dev/null; then
-        local version
-        version=$("${TFT_PYTHON}" --version 2>&1)
-        log "INFO" "Found ${version}"
-        return 0
-    fi
-    
-    log "WARN" "${TFT_PYTHON} not found, attempting to install..."
-    
-    # Detect package manager and install Python
-    if command -v dnf &>/dev/null; then
-        log "INFO" "Installing Python ${TFT_PYTHON_VERSION} via dnf..."
-        sudo dnf install -y "python${TFT_PYTHON_VERSION}" "python${TFT_PYTHON_VERSION}-pip" "python${TFT_PYTHON_VERSION}-devel" || {
-            log "ERROR" "Failed to install Python ${TFT_PYTHON_VERSION} via dnf"
-            return 1
-        }
-    elif command -v yum &>/dev/null; then
-        log "INFO" "Installing Python ${TFT_PYTHON_VERSION} via yum..."
-        sudo yum install -y "python${TFT_PYTHON_VERSION}" "python${TFT_PYTHON_VERSION}-pip" "python${TFT_PYTHON_VERSION}-devel" || {
-            log "ERROR" "Failed to install Python ${TFT_PYTHON_VERSION} via yum"
-            return 1
-        }
-    elif command -v apt-get &>/dev/null; then
-        log "INFO" "Installing Python ${TFT_PYTHON_VERSION} via apt..."
-        sudo apt-get update
-        sudo apt-get install -y "python${TFT_PYTHON_VERSION}" "python${TFT_PYTHON_VERSION}-venv" "python${TFT_PYTHON_VERSION}-dev" || {
-            log "ERROR" "Failed to install Python ${TFT_PYTHON_VERSION} via apt"
-            return 1
-        }
-    else
-        log "ERROR" "No supported package manager found (dnf/yum/apt)"
-        log "ERROR" "Please install Python ${TFT_PYTHON_VERSION} manually"
+    if ! command -v "${TFT_PYTHON}" &>/dev/null; then
+        log "ERROR" "${TFT_PYTHON} not found. Please install Python >= 3.10"
         return 1
     fi
-    
-    # Verify installation
-    if command -v "${TFT_PYTHON}" &>/dev/null; then
-        local version
-        version=$("${TFT_PYTHON}" --version 2>&1)
-        log "INFO" "Successfully installed ${version}"
-        return 0
-    else
-        log "ERROR" "Python ${TFT_PYTHON_VERSION} installation failed"
+
+    local version
+    version=$("${TFT_PYTHON}" --version 2>&1)
+    log "INFO" "Found ${version}"
+
+    local minor
+    minor=$("${TFT_PYTHON}" -c "import sys; print(sys.version_info.minor)")
+    if [[ "$minor" -lt 10 ]]; then
+        log "ERROR" "Python >= 3.10 required (found ${version})"
         return 1
     fi
 }
@@ -225,19 +191,19 @@ setup_tft_repo() {
 setup_venv() {
     log "INFO" "Setting up Python virtual environment..."
     
-    # Ensure Python 3.11 is available
     ensure_python || return 1
-    
+
     if [[ ! -d "${TFT_VENV_DIR}" ]]; then
         log "INFO" "Creating virtual environment at ${TFT_VENV_DIR} using ${TFT_PYTHON}..."
         "${TFT_PYTHON}" -m venv "${TFT_VENV_DIR}"
     else
-        # Verify existing venv has correct Python version
-        local venv_version
-        venv_version=$("${TFT_VENV_DIR}/bin/python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-        
-        if [[ "$venv_version" != "${TFT_PYTHON_VERSION}" ]]; then
-            log "WARN" "Existing venv has Python $venv_version, recreating with ${TFT_PYTHON}..."
+        # Recreate if the venv Python no longer matches the system one
+        local venv_version system_version
+        venv_version=$("${TFT_VENV_DIR}/bin/python" --version 2>/dev/null || echo "none")
+        system_version=$("${TFT_PYTHON}" --version 2>&1)
+
+        if [[ "$venv_version" != "$system_version" ]]; then
+            log "WARN" "Existing venv has ${venv_version}, recreating with ${system_version}..."
             rm -rf "${TFT_VENV_DIR}"
             "${TFT_PYTHON}" -m venv "${TFT_VENV_DIR}"
         fi
@@ -458,12 +424,11 @@ show_config() {
     echo "  TFT_WORK_DIR:       ${TFT_WORK_DIR}"
     echo ""
     echo "Python:"
-    echo "  Required version:   ${TFT_PYTHON_VERSION}"
     echo "  TFT_PYTHON:         ${TFT_PYTHON}"
     if command -v "${TFT_PYTHON}" &>/dev/null; then
         echo "  Status:             $(${TFT_PYTHON} --version 2>&1)"
     else
-        echo "  Status:             NOT INSTALLED (will be installed automatically)"
+        echo "  Status:             NOT FOUND"
     fi
     echo ""
     echo "Test Parameters:"
