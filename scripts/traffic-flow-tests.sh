@@ -137,11 +137,11 @@ discover_tft_nodes() {
 }
 
 # -----------------------------------------------------------------------------
-# Ensure Python >= 3.10 is available
+# Ensure Python >= 3.11 is available
 # -----------------------------------------------------------------------------
 ensure_python() {
     if ! command -v "${TFT_PYTHON}" &>/dev/null; then
-        log "ERROR" "${TFT_PYTHON} not found. Please install Python >= 3.10"
+        log "ERROR" "${TFT_PYTHON} not found. Please install Python >= 3.11"
         return 1
     fi
 
@@ -149,9 +149,9 @@ ensure_python() {
     version=$("${TFT_PYTHON}" --version 2>&1)
     log "INFO" "Found ${version}"
 
-    local minor
-    minor=$("${TFT_PYTHON}" -c "import sys; print(sys.version_info.minor)")
-    if [[ "$minor" -lt 11 ]]; then
+    local meets_min
+    meets_min=$("${TFT_PYTHON}" -c "import sys; print(int(sys.version_info >= (3, 11)))")
+    if [[ "$meets_min" -ne 1 ]]; then
         log "ERROR" "Python >= 3.11 required (found ${version})"
         return 1
     fi
