@@ -282,7 +282,7 @@ function apply_post_installation() {
     # Wait for DPF provisioning webhook to be ready before applying manifests
     log [INFO] "Waiting for DPF provisioning webhook service to be ready..."
     local webhook_ready=false
-    local max_attempts=30
+    local max_attempts=120
     local attempt=0
 
     while [ $attempt -lt $max_attempts ] && [ "$webhook_ready" = "false" ]; do
