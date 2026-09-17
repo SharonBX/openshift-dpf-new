@@ -29,7 +29,7 @@ TFT_WORK_DIR="${TFT_WORK_DIR:-${SCRIPT_DIR}/../repos/kubernetes-traffic-flow-tes
 TFT_VENV_DIR="${TFT_WORK_DIR}/tft-venv"
 
 # Python Configuration
-# TFT requires Python >= 3.10 (dataclass kw_only parameter)
+# TFT recommends Python >= 3.11 (upstream CI tests 3.11, 3.12, 3.13)
 TFT_PYTHON="${TFT_PYTHON:-python3}"
 
 # Test Configuration
@@ -151,8 +151,8 @@ ensure_python() {
 
     local minor
     minor=$("${TFT_PYTHON}" -c "import sys; print(sys.version_info.minor)")
-    if [[ "$minor" -lt 10 ]]; then
-        log "ERROR" "Python >= 3.10 required (found ${version})"
+    if [[ "$minor" -lt 11 ]]; then
+        log "ERROR" "Python >= 3.11 required (found ${version})"
         return 1
     fi
 }
@@ -494,13 +494,13 @@ case "${1:-}" in
         echo "Environment Variables:"
         echo "  TFT_REPO_URL        - Repository URL (default: https://github.com/ovn-kubernetes/kubernetes-traffic-flow-tests.git)"
         echo "  TFT_REPO_REV        - Git revision to checkout (default: main)"
-        echo "  TFT_TEST_CASES      - Test cases to run (default: 1-25)"
+        echo "  TFT_TEST_CASES      - Test cases to run (default: 1-25,32-34,69)"
         echo "  TFT_DURATION        - Duration per test in seconds (default: 10)"
         echo "  TFT_CONNECTION_TYPE - Connection type: iperf-tcp, iperf-udp, etc. (default: iperf-tcp)"
         echo "  TFT_KUBECONFIG      - Path to cluster kubeconfig"
         echo "  TFT_SERVER_NODE     - Kubernetes node name for server (default: auto-discover DPU worker)"
         echo "  TFT_CLIENT_NODE     - Kubernetes node name for client (default: auto-discover)"
-        echo "  TFT_PYTHON          - Python interpreter (default: python3.11)"
+        echo "  TFT_PYTHON          - Python interpreter, requires >= 3.11 (default: python3)"
         echo ""
         echo "Note: Python 3.11 is required. If not installed, the script will attempt"
         echo "      to install it automatically using dnf/yum/apt."
