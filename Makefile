@@ -630,6 +630,8 @@ help:
 	@echo "  VM_WORKER_DISK_SIZE2 - Secondary disk size in GB for worker VMs (default: same as DISK_SIZE2)"
 	@echo ""
 	@echo "DPF Configuration:"
+	@echo "  DPF_DEPLOYMENT_MODE - Deployment profile: 'host-trusted' (default) or 'zero-trust'"
+	@echo "                        Zero Trust: make generate-env DPF_DEPLOYMENT_MODE=zero-trust"
 	@echo "  DPF_VERSION      - DPF operator version (default: $(DPF_VERSION))"
 	@echo "  KATA_ENABLED     - If true, make all runs enable-kata last (default: false)"
 	@echo "  SKIP_DEPLOY_STORAGE - If true, skip LSO/LVM/ODF deployment; ETCD_STORAGE_CLASS must point to existing StorageClass (default: false)"

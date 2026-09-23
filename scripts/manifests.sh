@@ -308,29 +308,47 @@ prepare_dpf_manifests() {
 }
 
 function enable_storage() {
-    log [INFO] "Enabling storage operator (STORAGE_TYPE=${STORAGE_TYPE})"
+    log [INFO] "Configuring Assisted Installer day-1 operators (DPF_DEPLOYMENT_MODE=${DPF_DEPLOYMENT_MODE}, STORAGE_TYPE=${STORAGE_TYPE})"
 
-    # Skip when user provides their own StorageClasses
+    # Assisted Installer only accepts operator changes before installation.
+    if check_cluster_installed; then
+        log [INFO] "Skipping day-1 operator configuration as cluster is already installed"
+        return 0
+    fi
+
+    # PATCHing olm_operators replaces the complete list. Build it once so the
+    # Zero Trust MCE requirement cannot overwrite the selected storage operator
+    # (or vice versa).
+    local -a olm_operators=()
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        log [INFO] "Zero Trust mode: enabling MultiCluster Engine via Assisted Installer OLM"
+        olm_operators+=("mce")
+    fi
+
+    # Skip storage only when the user provides their own StorageClasses. MCE is
+    # still selected above for Zero Trust deployments.
     if [ "${SKIP_DEPLOY_STORAGE}" = "true" ]; then
         log [INFO] "SKIP_DEPLOY_STORAGE=true: not enabling LSO/LVM operator; using existing StorageClasses (ETCD_STORAGE_CLASS=${ETCD_STORAGE_CLASS})"
-        return 0
-    fi
-
-    # Check if cluster is already installed
-    if check_cluster_installed; then
-        log [INFO] "Skipping storage operator configuration as cluster is already installed"
-        return 0
-    fi
-
-    if [ "${STORAGE_TYPE}" == "odf" ]; then
-        log [INFO] "Enable LSO operator via assisted installer OLM (ODF will be deployed post-install)"
-        aicli update cluster "$CLUSTER_NAME" -P olm_operators='[{"name": "lso"}]'
+    elif [ "${STORAGE_TYPE}" == "odf" ]; then
+        log [INFO] "Enable LSO operator via Assisted Installer OLM (ODF will be deployed post-install)"
+        olm_operators+=("lso")
     elif [[ "${OLM_WORKAROUND}" == "true" ]]; then
         log [INFO] "OLM_WORKAROUND=true: LVM will be deployed at finalizing stage using catalog ${CATALOG_SOURCE_NAME}"
     else
-        log [INFO] "Enable LVM operator via assisted installer OLM"
-        aicli update cluster "$CLUSTER_NAME" -P olm_operators='[{"name": "lvm"}]'
+        log [INFO] "Enable LVM operator via Assisted Installer OLM"
+        olm_operators+=("lvm")
     fi
+
+    if [ "${#olm_operators[@]}" -eq 0 ]; then
+        log [INFO] "No Assisted Installer OLM operators need to be enabled"
+        return 0
+    fi
+
+    local olm_operators_json
+    olm_operators_json=$(printf '%s\n' "${olm_operators[@]}" | jq -Rsc 'split("\n")[:-1] | map({name: .})')
+    log [INFO] "Setting Assisted Installer OLM operators: ${olm_operators[*]}"
+    aicli update cluster "$CLUSTER_NAME" -P "olm_operators=${olm_operators_json}"
 }
 
 # -----------------------------------------------------------------------------
@@ -350,12 +368,15 @@ function main() {
         prepare-dpf-manifests)
             prepare_manifests "dpf"
             ;;
+        enable-storage)
+            enable_storage
+            ;;
         apply-lso)
             deploy_lso
             ;;
         *)
             log [INFO] "Unknown command: $command"
-            log [INFO] "Available commands: prepare-manifests, prepare-dpf-manifests, apply-lso, deploy-core-operator-sources"
+            log [INFO] "Available commands: prepare-manifests, prepare-dpf-manifests, enable-storage, apply-lso, deploy-core-operator-sources"
             exit 1
             ;;
     esac
