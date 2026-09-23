@@ -195,6 +195,33 @@ fi
 # Only evaluate when sourced by other scripts (not when executed directly for
 # standalone commands like validate-env-files / generate-env).
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    # Compatibility default for .env files generated before deployment profiles
+    # were introduced.
+    DPF_DEPLOYMENT_MODE=${DPF_DEPLOYMENT_MODE:-host-trusted}
+    case "${DPF_DEPLOYMENT_MODE}" in
+        host-trusted|zero-trust)
+            ;;
+        *)
+            echo "Error: DPF_DEPLOYMENT_MODE must be 'host-trusted' or 'zero-trust'. Current value: ${DPF_DEPLOYMENT_MODE}" >&2
+            exit 1
+            ;;
+    esac
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        if [[ "${OPENSHIFT_VERSION}" != 4.22.* ]]; then
+            echo "Error: Zero Trust installation requires OPENSHIFT_VERSION=4.22.x. Current value: ${OPENSHIFT_VERSION}" >&2
+            exit 1
+        fi
+        if [ "${NODES_MTU}" != "9000" ]; then
+            echo "Error: Zero Trust installation requires NODES_MTU=9000. Current value: ${NODES_MTU}" >&2
+            exit 1
+        fi
+        if [ "${HYPERSHIFT_INSTALL_METHOD}" != "mce" ]; then
+            echo "Error: Zero Trust installation requires HYPERSHIFT_INSTALL_METHOD=mce. Current value: ${HYPERSHIFT_INSTALL_METHOD}" >&2
+            exit 1
+        fi
+    fi
+
     HELM_CHARTS_DIR=${HELM_CHARTS_DIR:-"$MANIFESTS_DIR/helm-charts-values"}
     HOST_CLUSTER_API=${HOST_CLUSTER_API:-"api.$CLUSTER_NAME.$BASE_DOMAIN"}
     HOSTED_CONTROL_PLANE_NAMESPACE=${HOSTED_CONTROL_PLANE_NAMESPACE:-"${CLUSTERS_NAMESPACE}-${HOSTED_CLUSTER_NAME}"}
