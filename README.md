@@ -34,6 +34,37 @@ This handles the complete deployment lifecycle:
 - **Red Hat Offline Token**: Generate at [cloud.redhat.com/openshift/token](https://cloud.redhat.com/openshift/token)
 - **NVIDIA NGC API Key**: Create at [NGC Portal](https://ngc.nvidia.com/) → Account → Setup
 
+### Zero Trust DPU BMC Prerequisites
+
+Complete these manual steps on every DPU BMC before running `make all-zt`:
+
+1. Configure the same `root` password on every DPU BMC. Set
+   `ZT_BMC_ROOT_PASSWORD` to this password when generating `.env`.
+2. Enable and start the `rshim` service on every DPU BMC:
+
+   ```bash
+   ssh root@<DPU_BMC_IP>
+   systemctl enable rshim
+   systemctl start rshim
+   systemctl is-enabled rshim
+   systemctl is-active rshim
+   ```
+
+   The last two commands must report `enabled` and `active`.
+3. Verify that the BMC Redfish endpoint is reachable. This command prompts for
+   the shared `root` password instead of putting it in the shell history:
+
+   ```bash
+   curl -k -u root https://<DPU_BMC_IP>/redfish/v1/Systems/Bluefield
+   ```
+
+The automation creates the Kubernetes BMC shared-password Secret, but it does
+not change the password or manage the `rshim` service on the physical DPU BMCs.
+
+Set `DPU1_SERIAL` for the first DPU. Additional DPUs are optional and use
+numbered variables such as `DPU2_SERIAL`, `DPU3_SERIAL`, and so on. Serial
+values must be lowercase.
+
 ## 🏃 Quick Start
 
 ### 1. Clone and Setup

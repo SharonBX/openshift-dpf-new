@@ -54,6 +54,46 @@ _all: $(ALL_STEPS)
 .PHONY: create-base-cluster
 create-base-cluster: verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig poweron-workers add-worker-nodes verify-workers
 
+.PHONY: all-zt
+all-zt:
+	@mkdir -p logs
+	@bash -o pipefail -c '$(MAKE) _all-zt DPF_DEPLOYMENT_MODE=zero-trust NODES_MTU=9000 2>&1 | tee "logs/make_all_zt_$(shell date +%Y%m%d_%H%M%S).log"'
+
+# Zero Trust installation through Chapter 8 DPU services and authorization.
+# Host worker/BMO provisioning, OVN injection, Kata, and trusted verification
+# are deliberately excluded.
+ZT_ALL_STEPS := validate-zt-mode verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig deploy-dpf prepare-dpu-files deploy-dpu-services deploy-hypershift deploy-zt-dpu-services
+
+.NOTPARALLEL: _all-zt
+.PHONY: _all-zt
+_all-zt: $(ZT_ALL_STEPS)
+	@echo ""
+	@echo "================================================================================"
+	@echo "Zero Trust DPF, hosted-cluster, and Chapter 8 DPU service configuration complete"
+	@echo "================================================================================"
+
+.PHONY: validate-zt-mode
+validate-zt-mode:
+	@if [ "$(DPF_DEPLOYMENT_MODE)" != "zero-trust" ]; then \
+		echo "ERROR: all-zt requires DPF_DEPLOYMENT_MODE=zero-trust"; \
+		exit 1; \
+	fi
+	@if [ "$(NODES_MTU)" != "9000" ]; then \
+		echo "ERROR: all-zt requires NODES_MTU=9000"; \
+		exit 1; \
+	fi
+	@if ! printf '%s' "$(OPENSHIFT_VERSION)" | grep -q '^4\.22\.'; then \
+		echo "ERROR: Zero Trust installation requires OPENSHIFT_VERSION=4.22.x"; \
+		exit 1; \
+	fi
+	@for variable in FLANNEL_POD_CIDR HYPERSHIFT_API_IP ZT_DPU_BMC_IP_RANGE_START ZT_DPU_BMC_IP_RANGE_END ZT_BMC_ROOT_PASSWORD ZT_BFB_REGISTRY_HOST ZT_BFB_REGISTRY_PORT ZT_DPU_DISCOVERY_NAME; do \
+		if [ -z "$$(printenv "$$variable")" ]; then \
+			echo "ERROR: Zero Trust installation requires $$variable"; \
+			exit 1; \
+		fi; \
+	done
+	@$(ENV_SCRIPT) validate-zt-serials
+
 .PHONY: verify-files
 verify-files:
 	@$(UTILS_SCRIPT) verify-files
@@ -215,6 +255,14 @@ generate-overrides:
 .PHONY: deploy-dpu-services
 deploy-dpu-services: prepare-dpu-files
 	@$(POST_INSTALL_SCRIPT) apply
+
+.PHONY: prepare-zt-dpu-services
+prepare-zt-dpu-services: validate-zt-mode
+	@$(POST_INSTALL_SCRIPT) prepare-zt-services
+
+.PHONY: deploy-zt-dpu-services
+deploy-zt-dpu-services: prepare-zt-dpu-services
+	@$(POST_INSTALL_SCRIPT) apply-zt-services
 
 .PHONY: deploy-observability
 deploy-observability:
@@ -500,6 +548,7 @@ help:
 	@echo "Cluster Management:"
 	@echo "  all               - Complete setup: verify, create cluster, VMs, install, and wait for completion (enable-kata last if KATA_ENABLED=true)"
 	@echo "  create-base-cluster - Create and install a base OpenShift cluster through worker provisioning"
+	@echo "  all-zt            - Zero Trust setup through Chapter 8 DPU services and hosted-cluster authorization"
 	@echo "  create-cluster    - Create a new cluster"
 	@echo "  create-day2-cluster - Create a day2 cluster for worker nodes with DPUs"
 	@echo "  get-day2-iso      - Get ISO URL for worker nodes with DPUs (uses day2 cluster)"
@@ -546,9 +595,11 @@ help:
 	@echo "  upgrade-dpu       - Upgrade DPUs by creating a new BFB and patching DPUDeployment (optional: DPU_UPGRADE_BFB_URL)"
 	@echo "  upgrade-dpf       - Interactive DPF operator upgrade (user-friendly wrapper for prepare-dpf-manifests)"
 	@echo "  prepare-dpu-files - Prepare post-installation manifests with custom values"
+	@echo "  prepare-zt-dpu-services - Prepare Zero Trust Chapter 8 DPU service and hosted-cluster RBAC manifests"
 	@echo "  generate-overrides - Write DPUServiceTemplate overrides ConfigMap (also via GENERATE_DPUSERVICETEMPLATE_OVERRIDES=true)"
 	@echo "  deploy-dpu-services - Deploy DPU services to the cluster"
 	@echo "  run-custom-postinstall-script - Run CUSTOM_POSTINSTALL_SCRIPT (file or http(s) URL, with args); also last make all step"
+	@echo "  deploy-zt-dpu-services - Apply and verify Zero Trust Chapter 8 services and hosted-cluster RBAC"
 	@echo "  enable-kata       - OSC (inert KataConfig) + kata-coldplug on worker-dpu (also last make all step when KATA_ENABLED=true)"
 	@echo "  deploy-kata-test  - Deploy kata-dpu-test Deployment (KATA_TEST_REPLICAS, default 1)"
 	@echo "  cleanup-kata-vfs  - Rebind stale vfio-pci VFs to mlx5_core on worker-dpu (FORCE=true to skip running-pod check)"
@@ -631,7 +682,8 @@ help:
 	@echo ""
 	@echo "DPF Configuration:"
 	@echo "  DPF_DEPLOYMENT_MODE - Deployment profile: 'host-trusted' (default) or 'zero-trust'"
-	@echo "                        Zero Trust: make generate-env DPF_DEPLOYMENT_MODE=zero-trust"
+	@echo "                        Zero Trust: make generate-env DPF_DEPLOYMENT_MODE=zero-trust NODES_MTU=9000"
+	@echo "                        Zero Trust uses the HyperShift CLI, staticClusterManager, and Redfish"
 	@echo "  DPF_VERSION      - DPF operator version (default: $(DPF_VERSION))"
 	@echo "  KATA_ENABLED     - If true, make all runs enable-kata last (default: false)"
 	@echo "  SKIP_DEPLOY_STORAGE - If true, skip LSO/LVM/ODF deployment; ETCD_STORAGE_CLASS must point to existing StorageClass (default: false)"

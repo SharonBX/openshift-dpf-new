@@ -137,6 +137,16 @@ _do_generate_env() {
         set +a
         source "$required_file"
         envsubst < "$template_file" > "$output_file"
+
+        # Persist optional DPU3_SERIAL, DPU4_SERIAL, ... variables supplied by
+        # the installer. DPU1_SERIAL and DPU2_SERIAL already have canonical
+        # positions in the template and are therefore skipped here.
+        local serial_variable
+        while IFS= read -r serial_variable; do
+            if ! grep -q "^${serial_variable}=" "$output_file"; then
+                printf '%s=%s\n' "${serial_variable}" "${!serial_variable}" >> "$output_file"
+            fi
+        done < <(list_dpu_serial_variables)
     )
 }
 
@@ -220,6 +230,42 @@ resolve_dpf_storage_class() {
     fi
 }
 
+# Print DPU1_SERIAL, DPU2_SERIAL, DPU3_SERIAL, ... in numeric order. Additional
+# numbered variables can be supplied through .env, the process environment, or
+# the make command line without changing the deployment scripts.
+list_dpu_serial_variables() {
+    compgen -A variable | grep -E '^DPU[1-9][0-9]*_SERIAL$' | sort -V || true
+}
+
+validate_zero_trust_dpu_serials() {
+    local invalid=0
+    local variable serial
+    local -A seen_serials=()
+
+    if [ -z "${DPU1_SERIAL:-}" ]; then
+        echo "ERROR: Zero Trust installation requires DPU1_SERIAL" >&2
+        invalid=1
+    fi
+
+    while IFS= read -r variable; do
+        serial="${!variable:-}"
+        [ -n "${serial}" ] || continue
+
+        if [[ "${serial}" =~ [[:upper:]] ]]; then
+            echo "ERROR: ${variable} must be lowercase" >&2
+            invalid=1
+        fi
+        if [ -n "${seen_serials[${serial}]+x}" ]; then
+            echo "ERROR: ${variable} duplicates another DPU serial: ${serial}" >&2
+            invalid=1
+        else
+            seen_serials["${serial}"]=1
+        fi
+    done < <(list_dpu_serial_variables)
+
+    [ "${invalid}" -eq 0 ]
+}
+
 # Load environment variables from .env file and validate aicli connectivity
 # (skip load/validate if already in Make context — the Makefile does
 # `include .env` + `export`). Still strip quotes Make left on values;
@@ -269,10 +315,6 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
         fi
         if [ "${NODES_MTU}" != "9000" ]; then
             echo "Error: Zero Trust installation requires NODES_MTU=9000. Current value: ${NODES_MTU}" >&2
-            exit 1
-        fi
-        if [ "${HYPERSHIFT_INSTALL_METHOD}" != "mce" ]; then
-            echo "Error: Zero Trust installation requires HYPERSHIFT_INSTALL_METHOD=mce. Current value: ${HYPERSHIFT_INSTALL_METHOD}" >&2
             exit 1
         fi
     fi
@@ -336,9 +378,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         generate-env-test)
             generate_env_test "${2:-false}"
             ;;
+        validate-zt-serials)
+            validate_zero_trust_dpu_serials
+            ;;
         *)
             echo "ERROR: Unknown command: $command"
-            echo "Available commands: validate-env-files, generate-env, validate-env-test-files, generate-env-test"
+            echo "Available commands: validate-env-files, generate-env, validate-env-test-files, generate-env-test, validate-zt-serials"
             exit 1
             ;;
     esac
