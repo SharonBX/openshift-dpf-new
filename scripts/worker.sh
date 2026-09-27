@@ -265,6 +265,11 @@ poweron_all_workers() {
 }
 
 provision_all_workers() {
+    if [[ "${DPF_DEPLOYMENT_MODE:-host-trusted}" == "zero-trust" ]]; then
+        log "ERROR" "add-worker-nodes is a host-trusted operation; Zero Trust discovers and provisions DPUs through Redfish/OOB during deploy-dpf"
+        return 1
+    fi
+
     local count="${WORKER_COUNT:-0}"
     [[ "$count" -eq 0 ]] && { log "INFO" "WORKER_COUNT=0, skipping"; return 0; }
 

@@ -78,9 +78,22 @@ function deploy_metallb() {
         apply_manifest "${GENERATED_DIR}/metallb-subscription.yaml" true  
     fi
     
-    # Wait for MetalLB operator pods to be ready
+    # The PDF requires MetalLB before the DPF HCP Provisioner. For Zero Trust,
+    # wait on this Subscription's installed CSV instead of a generic pod label
+    # that can also match unrelated operators in openshift-operators.
     log [INFO] "Waiting for MetalLB operator to be ready..."
-    wait_for_pods "openshift-operators" "control-plane=controller-manager" 60 5
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        if ! retry 60 10 bash -c '
+            csv=$(oc get subscription metallb-operator -n openshift-operators -o jsonpath="{.status.installedCSV}" 2>/dev/null) &&
+            [ -n "$csv" ] &&
+            [ "$(oc get csv "$csv" -n openshift-operators -o jsonpath="{.status.phase}" 2>/dev/null)" = Succeeded ]
+        '; then
+            log [ERROR] "MetalLB operator CSV did not reach Succeeded"
+            return 1
+        fi
+    else
+        wait_for_pods "openshift-operators" "control-plane=controller-manager" 60 5
+    fi
     
     log [INFO] "Creating MetalLB instance..."
 
@@ -168,6 +181,15 @@ function deploy_dpf_hcp_provisioner_operator() {
     ensure_helm_installed
 
     log [INFO] "Installing/upgrading DPF HCP Provisioner Operator..."
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        # Use the matching private ZT chart/image release until it is published officially.
+        DPF_HCP_PROVISIONER_OPERATOR_CHART_URL="oci://quay.io/rh-ee-sbarak/charts/dpf-hcp-provisioner-operator"
+        DPF_HCP_PROVISIONER_OPERATOR_VERSION="0.1.24"
+        DPF_HCP_PROVISIONER_OPERATOR_IMAGE_REPO="quay.io/rh-ee-sbarak/dpf-hcp-provisioner-operator"
+        DPF_HCP_PROVISIONER_OPERATOR_IMAGE_TAG="v0.1.24"
+        log [INFO] "Zero Trust mode: using DPF HCP Provisioner Operator chart ${DPF_HCP_PROVISIONER_OPERATOR_VERSION} and image ${DPF_HCP_PROVISIONER_OPERATOR_IMAGE_REPO}:${DPF_HCP_PROVISIONER_OPERATOR_IMAGE_TAG}"
+    fi
 
     local version_flag=""
     if [[ -n "${DPF_HCP_PROVISIONER_OPERATOR_VERSION}" ]]; then
@@ -317,7 +339,11 @@ function deploy_dpfhcp() {
     log [INFO] "Deploying DPF HCP Provisioner"
     log [INFO] "================================================================================"
 
-    deploy_dpu_worker_config
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        log [INFO] "Zero Trust mode: skipping host DPU worker configuration"
+    else
+        deploy_dpu_worker_config
+    fi
     deploy_dpf_hcp_provisioner_operator
 }
 
@@ -332,6 +358,11 @@ function create_hosted_cluster() {
     elif [ "${VM_COUNT}" -gt 1 ]; then
         log [WARN] "Multi-node cluster detected but HYPERSHIFT_API_IP not set."
         log [WARN] "Hypershift API will use NodePort instead of LoadBalancer."
+    fi
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        log [INFO] "Verifying the Chapter 7 etcd StorageClass prerequisite..."
+        wait_for_storage_class "${ETCD_STORAGE_CLASS}" || return 1
     fi
 
     create_dpfhcpprovisioner_secrets
@@ -370,15 +401,81 @@ function create_hosted_cluster() {
     log [INFO] "================================================================================"
 }
 
+function zero_trust_dpfhcp_provisioner_is_ready() {
+    local phase
+    phase=$(oc get dpfhcpprovisioner.provisioning.dpu.hcp.io \
+        "${HOSTED_CLUSTER_NAME}" \
+        -n "${CLUSTERS_NAMESPACE}" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    [ "${phase}" = "Ready" ]
+}
+
+function zero_trust_dpu_cluster_is_ready() {
+    local phase ready
+    phase=$(oc get dpucluster.provisioning.dpu.nvidia.com \
+        "${HOSTED_CLUSTER_NAME}" \
+        -n dpf-operator-system \
+        -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    ready=$(oc get dpucluster.provisioning.dpu.nvidia.com \
+        "${HOSTED_CLUSTER_NAME}" \
+        -n dpf-operator-system \
+        -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' \
+        2>/dev/null || true)
+    [ "${phase}" = "Ready" ] && [ "${ready}" = "True" ]
+}
+
+function verify_zero_trust_cluster_provisioning() {
+    [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ] || return 0
+
+    log [INFO] "Waiting for Zero Trust DPFHCPProvisioner to become Ready..."
+    if ! retry 180 10 zero_trust_dpfhcp_provisioner_is_ready; then
+        log [ERROR] "DPFHCPProvisioner ${HOSTED_CLUSTER_NAME} did not become Ready within 30 minutes"
+        oc get dpfhcpprovisioner.provisioning.dpu.hcp.io \
+            "${HOSTED_CLUSTER_NAME}" \
+            -n "${CLUSTERS_NAMESPACE}" \
+            -o yaml || true
+        return 1
+    fi
+
+    log [INFO] "Waiting for Zero Trust DPUCluster to become Ready..."
+    if ! retry 60 10 zero_trust_dpu_cluster_is_ready; then
+        log [ERROR] "DPUCluster ${HOSTED_CLUSTER_NAME} did not become Ready within 10 minutes"
+        oc get dpucluster.provisioning.dpu.nvidia.com \
+            "${HOSTED_CLUSTER_NAME}" \
+            -n dpf-operator-system \
+            -o yaml || true
+        return 1
+    fi
+
+    log [INFO] "Verifying the hosted-cluster kubeconfig Secret..."
+    if ! retry 60 10 oc get secret \
+        "${HOSTED_CLUSTER_NAME}-admin-kubeconfig" \
+        -n dpf-operator-system; then
+        log [ERROR] "Hosted-cluster kubeconfig Secret was not created in dpf-operator-system"
+        return 1
+    fi
+
+    oc get dpfhcpprovisioner.provisioning.dpu.hcp.io \
+        "${HOSTED_CLUSTER_NAME}" -n "${CLUSTERS_NAMESPACE}"
+    oc get dpucluster.provisioning.dpu.nvidia.com \
+        "${HOSTED_CLUSTER_NAME}" -n dpf-operator-system
+}
+
 function deploy_hypershift() {
     log [INFO] "================================================================================"
     log [INFO] "Deploying Hosted Cluster using DPF HCP Provisioner Operator"
     log [INFO] "================================================================================"
 
+    local install_method="${HYPERSHIFT_INSTALL_METHOD:-binary}"
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        install_method="binary"
+        log [INFO] "Zero Trust mode: installing the HyperShift operator with the hypershift CLI"
+    fi
+
     if oc get deployment -n hypershift operator &>/dev/null; then
         log [INFO] "Hypershift operator already installed. Skipping deployment."
     else
-        case "${HYPERSHIFT_INSTALL_METHOD:-binary}" in
+        case "${install_method}" in
             mce)
                 log [INFO] "Installing Hypershift via MultiCluster Engine (MCE)..."
                 install_hypershift_via_mce
@@ -389,7 +486,7 @@ function deploy_hypershift() {
                 wait_for_pods "hypershift" "app=operator" 60 10
                 ;;
             *)
-                log [ERROR] "Unknown HYPERSHIFT_INSTALL_METHOD: ${HYPERSHIFT_INSTALL_METHOD}. Valid values: binary, mce"
+                log [ERROR] "Unknown HYPERSHIFT_INSTALL_METHOD: ${install_method}. Valid values: binary, mce"
                 return 1
                 ;;
         esac
@@ -397,6 +494,7 @@ function deploy_hypershift() {
 
     deploy_dpfhcp
     create_hosted_cluster
+    verify_zero_trust_cluster_provisioning
 }
 
 function add_cno_image_override() {
@@ -424,8 +522,16 @@ function add_cno_image_override() {
 function configure_hypershift() {
     log [INFO] "Creating kubeconfig for Hypershift hosted cluster..."
 
+    local hosted_secret_retries=60
+    local copied_secret_retries=30
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        # Chapter 7 allows up to 30 minutes for hosted-cluster provisioning.
+        hosted_secret_retries=180
+        copied_secret_retries=180
+    fi
+
     # Wait for the HostedCluster resource to create the admin-kubeconfig secret with valid data
-    wait_for_secret_with_data "${CLUSTERS_NAMESPACE}" "${HOSTED_CLUSTER_NAME}-admin-kubeconfig" "kubeconfig" 60 10
+    wait_for_secret_with_data "${CLUSTERS_NAMESPACE}" "${HOSTED_CLUSTER_NAME}-admin-kubeconfig" "kubeconfig" "${hosted_secret_retries}" 10
 
     # Create ${HOSTED_CLUSTER_NAME}.kubeconfig file for use by post-install scripts
     log [INFO] "Generating kubeconfig file for ${HOSTED_CLUSTER_NAME}..."
@@ -441,8 +547,8 @@ function configure_hypershift() {
 
     # Wait for the dpf-hcp-provisioner-operator to copy the secret to dpf-operator-system namespace
     log [INFO] "Waiting for dpf-hcp-provisioner-operator to create kubeconfig secret in dpf-operator-system..."
-    if ! retry 30 10 oc get secret -n dpf-operator-system "${HOSTED_CLUSTER_NAME}-admin-kubeconfig" &>/dev/null; then
-        log [ERROR] "Timeout: dpf-hcp-provisioner-operator did not create kubeconfig secret in dpf-operator-system after 5 minutes"
+    if ! retry "${copied_secret_retries}" 10 oc get secret -n dpf-operator-system "${HOSTED_CLUSTER_NAME}-admin-kubeconfig" &>/dev/null; then
+        log [ERROR] "Timeout: dpf-hcp-provisioner-operator did not create kubeconfig secret in dpf-operator-system"
         return 1
     fi
     log [INFO] "Kubeconfig secret successfully created by dpf-hcp-provisioner-operator in dpf-operator-system"
@@ -451,6 +557,16 @@ function configure_hypershift() {
 function apply_remaining() {
     log [INFO] "Applying remaining manifests..."
     for file in "$GENERATED_DIR"/*.yaml; do
+        # DPUCluster and DPUDiscovery use webhooks owned by the provisioning
+        # controller. Apply them explicitly, in PDF order, after that
+        # controller is ready.
+        if [[ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" &&
+              ( "$file" = "$GENERATED_DIR/static-dpucluster-template.yaml" ||
+                "$file" = "$GENERATED_DIR/dpudiscovery.yaml" ) ]]; then
+            log [INFO] "Deferring Zero Trust $(basename "$file") until the provisioning controller is ready"
+            continue
+        fi
+
         # Skip NFD deployment if DISABLE_NFD is set to true
         if [[ "${DISABLE_NFD}" = "true" && "$file" =~ .*dpf-nfd\.yaml$ ]]; then
             log [INFO] "Skipping NFD deployment (DISABLE_NFD explicitly set to true)"
@@ -468,6 +584,97 @@ function apply_remaining() {
             fi
         fi
     done
+}
+
+function configure_zero_trust_default_scc() {
+    [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ] || return 0
+
+    log [INFO] "Granting the privileged SCC to the Zero Trust DPF default service account..."
+    oc adm policy add-scc-to-user privileged \
+        -z default \
+        -n dpf-operator-system
+}
+
+function zero_trust_discovery_resource_exists() {
+    local resource="$1"
+    local name="$2"
+
+    oc get "${resource}" "${name}" \
+        -n dpf-operator-system \
+        -o name &>/dev/null
+}
+
+function deploy_zero_trust_dpu_discovery() {
+    [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ] || return 0
+
+    local discovery_manifest="${GENERATED_DIR}/dpudiscovery.yaml"
+    local cluster_manifest="${GENERATED_DIR}/static-dpucluster-template.yaml"
+    if [ ! -f "${discovery_manifest}" ]; then
+        log [ERROR] "Zero Trust DPUDiscovery manifest not found: ${discovery_manifest}"
+        return 1
+    fi
+    if [ ! -f "${cluster_manifest}" ]; then
+        log [ERROR] "Zero Trust DPUCluster manifest not found: ${cluster_manifest}"
+        return 1
+    fi
+
+    log [INFO] "Waiting for the Zero Trust Redfish provisioning API..."
+    retry 60 10 oc get crd dpudiscoveries.provisioning.dpu.nvidia.com
+    retry 60 10 oc rollout status \
+        deployment/dpf-provisioning-controller-manager \
+        -n dpf-operator-system \
+        --timeout=10s
+    retry 60 10 oc rollout status \
+        deployment/dpuservice-controller-manager \
+        -n dpf-operator-system \
+        --timeout=10s
+    retry 60 5 bash -c \
+        'oc get endpoints dpf-provisioning-webhook-service -n dpf-operator-system -o jsonpath="{.subsets[*].addresses[*].ip}" | grep -q .'
+
+    log [INFO] "Applying the Zero Trust static DPUCluster..."
+    apply_manifest "${cluster_manifest}" true
+    # DPUCluster becomes Ready after the hosted-cluster kubeconfig is created.
+    oc get dpucluster.provisioning.dpu.nvidia.com \
+        "${HOSTED_CLUSTER_NAME}" \
+        -n dpf-operator-system
+
+    log [INFO] "Applying Zero Trust DPUDiscovery through Redfish/OOB"
+    apply_manifest "${discovery_manifest}" true
+
+    local serial_variable serial
+    while IFS= read -r serial_variable; do
+        serial="${!serial_variable:-}"
+        [ -n "${serial}" ] || continue
+
+        log [INFO] "Waiting for Zero Trust discovery to create DPUDevice ${serial}..."
+        if ! retry 60 10 zero_trust_discovery_resource_exists \
+            dpudevices.provisioning.dpu.nvidia.com "${serial}"; then
+            log [ERROR] "DPUDevice ${serial} was not discovered within 10 minutes"
+            oc get dpudiscoveries.provisioning.dpu.nvidia.com \
+                -n dpf-operator-system || true
+            return 1
+        fi
+
+        log [INFO] "Waiting for Zero Trust discovery to create DPUNode dpu-node-${serial}..."
+        if ! retry 60 10 zero_trust_discovery_resource_exists \
+            dpunodes.provisioning.dpu.nvidia.com "dpu-node-${serial}"; then
+            log [ERROR] "DPUNode dpu-node-${serial} was not discovered within 10 minutes"
+            oc get dpudevices.provisioning.dpu.nvidia.com \
+                -n dpf-operator-system || true
+            return 1
+        fi
+
+        # Set the discovered DPUNode label to the empty value selected by DPUDeployment.
+        log [INFO] "Normalizing the discovered DPUNode label for dpu-node-${serial}..."
+        oc label -n dpf-operator-system \
+            "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
+            feature.node.kubernetes.io/dpu-enabled= \
+            --overwrite
+    done < <(list_dpu_serial_variables)
+
+    log [INFO] "Zero Trust DPU discovery completed"
+    oc get dpudevices.provisioning.dpu.nvidia.com -n dpf-operator-system
+    oc get dpunodes.provisioning.dpu.nvidia.com -n dpf-operator-system
 }
 
 function deploy_argocd() {
@@ -501,8 +708,26 @@ function deploy_argocd() {
     # Ensure target namespace exists before applying CR
     oc get ns dpf-operator-system &>/dev/null || oc create ns dpf-operator-system
 
-    apply_manifest "${MANIFESTS_DIR}/gitops-operator/argocd.yaml"
+    local argocd_manifest="${MANIFESTS_DIR}/gitops-operator/argocd.yaml"
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        argocd_manifest="${MANIFESTS_DIR}/gitops-operator/argocd-zero-trust.yaml"
+        apply_manifest "${argocd_manifest}" true
+    else
+        apply_manifest "${argocd_manifest}"
+    fi
     wait_for_pods "dpf-operator-system" "app.kubernetes.io/name=argocd-application-controller" 60 10
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        log [INFO] "Waiting for the Zero Trust ArgoCD Redis deployment..."
+        retry 30 10 oc rollout status deployment/argocd-redis \
+            -n dpf-operator-system \
+            --timeout=10s
+        log [INFO] "Adding the Zero Trust skip-injection label to ArgoCD Redis..."
+        retry 5 10 oc patch deployment argocd-redis \
+            -n dpf-operator-system \
+            --type=merge \
+            -p '{"spec":{"template":{"metadata":{"labels":{"ovn.dpu.nvidia.com/skip-injection":""}}}}}'
+    fi
     
     log [INFO] "GitOps operator deployment complete!"
 }
@@ -532,6 +757,57 @@ function deploy_maintenance_operator() {
     log [INFO] "Maintenance Operator deployment complete!"
 }
 
+function kube_apiserver_clusteroperator_condition_is() {
+    local condition="$1"
+    local expected="$2"
+    local actual
+
+    actual=$(oc get clusteroperator kube-apiserver \
+        -o "jsonpath={.status.conditions[?(@.type==\"${condition}\")].status}" \
+        2>/dev/null || true)
+    [ "${actual}" = "${expected}" ]
+}
+
+function kube_apiserver_clusteroperator_is_healthy() {
+    kube_apiserver_clusteroperator_condition_is Available True &&
+        kube_apiserver_clusteroperator_condition_is Progressing False &&
+        kube_apiserver_clusteroperator_condition_is Degraded False
+}
+
+function configure_zero_trust_bootstrap_auth() {
+    [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ] || return 0
+
+    local bootstrap_auth_enabled
+    bootstrap_auth_enabled=$(oc get kubeapiserver cluster \
+        -o 'jsonpath={.spec.unsupportedConfigOverrides.apiServerArguments.enable-bootstrap-token-auth[0]}' \
+        2>/dev/null || true)
+
+    if [ "${bootstrap_auth_enabled}" = "true" ]; then
+        log "INFO" "Kube API bootstrap-token authentication is already enabled"
+    else
+        log "INFO" "Enabling kube-apiserver bootstrap-token authentication for Zero Trust DPU agents..."
+        oc patch kubeapiserver cluster --type=merge -p \
+            '{"spec":{"unsupportedConfigOverrides":{"apiServerArguments":{"enable-bootstrap-token-auth":["true"]}}}}'
+
+        log "INFO" "Watching for the kube-apiserver rollout to start..."
+        if ! retry 24 5 kube_apiserver_clusteroperator_condition_is Progressing True; then
+            # A fast rollout can transition back to Progressing=False between
+            # polls. The authoritative check below still requires the operator
+            # to be Available and neither Progressing nor Degraded.
+            log "WARN" "The kube-apiserver Progressing=True transition was not observed; checking final health"
+        fi
+    fi
+
+    log "INFO" "Waiting for the kube-apiserver ClusterOperator to become healthy..."
+    if ! retry 120 10 kube_apiserver_clusteroperator_is_healthy; then
+        log "ERROR" "Kube-apiserver rollout did not complete successfully"
+        oc get clusteroperator kube-apiserver
+        return 1
+    fi
+
+    log "INFO" "Kube API bootstrap-token authentication is enabled and the rollout is complete"
+}
+
 function apply_dpf() {
     log "INFO" "Starting DPF deployment sequence..."
     log "INFO" "Provided kubeconfig ${KUBECONFIG}"
@@ -548,18 +824,36 @@ function apply_dpf() {
         return 1
     fi
     log "INFO" "Cluster is accessible, proceeding with DPF deployment..."
-    
-    deploy_argocd
-    deploy_maintenance_operator
 
-    log "INFO" "Enabling IP forwarding for OVN Kubernetes..."
-    oc patch network.operator.openshift.io cluster --type=merge -p \
-    '{"spec":{"defaultNetwork":{ "ovnKubernetesConfig":{"gatewayConfig":{"ipForwarding":"Global"}}}}}'
-    
-    deploy_nfd
-    
-    apply_namespaces
-    deploy_cert_manager
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        # PDF Chapters 3, 4, and 6: namespace and prerequisite operators first,
+        # followed by the API bootstrap-authentication change.
+        apply_namespaces
+        deploy_cert_manager
+        deploy_nfd
+        deploy_metallb
+        deploy_argocd
+        deploy_maintenance_operator
+
+        log "INFO" "Enabling IP forwarding for OVN Kubernetes..."
+        oc patch network.operator.openshift.io cluster --type=merge -p \
+        '{"spec":{"defaultNetwork":{ "ovnKubernetesConfig":{"gatewayConfig":{"ipForwarding":"Global"}}}}}'
+
+        configure_zero_trust_bootstrap_auth
+    else
+        # Preserve the established host-trusted deployment order.
+        configure_zero_trust_bootstrap_auth
+        deploy_argocd
+        deploy_maintenance_operator
+
+        log "INFO" "Enabling IP forwarding for OVN Kubernetes..."
+        oc patch network.operator.openshift.io cluster --type=merge -p \
+        '{"spec":{"defaultNetwork":{ "ovnKubernetesConfig":{"gatewayConfig":{"ipForwarding":"Global"}}}}}'
+
+        deploy_nfd
+        apply_namespaces
+        deploy_cert_manager
+    fi
     
     # Install/upgrade DPF Operator using helm (idempotent operation)
     log "INFO" "Installing/upgrading DPF Operator to $DPF_VERSION..."
@@ -632,12 +926,23 @@ function apply_dpf() {
         log "ERROR" "Helm deployment failed"
         return 1
     fi
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        log [INFO] "Waiting for the DPF Operator before applying Zero Trust custom resources..."
+        wait_for_pods "dpf-operator-system" "dpu.nvidia.com/component=dpf-operator-controller-manager" 60 5
+    fi
     
+    configure_zero_trust_default_scc
     apply_remaining
     apply_scc
-    deploy_hosted_cluster
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        log [INFO] "Deferring Chapter 7 hosted-cluster provisioning until after the Zero Trust DPUDeployment is applied"
+    else
+        deploy_hosted_cluster
+    fi
 
     wait_for_pods "dpf-operator-system" "dpu.nvidia.com/component=dpf-operator-controller-manager" 30 5
+    deploy_zero_trust_dpu_discovery
 
     log [INFO] "DPF deployment complete"
 }

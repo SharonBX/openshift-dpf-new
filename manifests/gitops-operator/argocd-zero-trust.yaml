@@ -1,0 +1,35 @@
+---
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: argocd
+  namespace: dpf-operator-system
+spec:
+  nodePlacement:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    tolerations:
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  server:
+    route:
+      enabled: true
+  controller: {}
+  repo: {}
+  applicationSet:
+    enabled: false
+  resourceExclusions: |
+    - apiGroups:
+      - packages.operators.coreos.com
+      kinds:
+      - PackageManifest
+  sso:
+    provider: dex
+    dex:
+      openShiftOAuth: true
+  notifications:
+    enabled: false
