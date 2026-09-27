@@ -201,7 +201,6 @@ validate_zero_trust_dpf_variables() {
     local variable
 
     for variable in \
-        FLANNEL_POD_CIDR \
         HYPERSHIFT_API_IP \
         ZT_DPU_BMC_IP_RANGE_START \
         ZT_DPU_BMC_IP_RANGE_END \

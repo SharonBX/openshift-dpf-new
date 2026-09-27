@@ -309,10 +309,6 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     esac
 
     if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
-        if [[ "${OPENSHIFT_VERSION}" != 4.22.* ]]; then
-            echo "Error: Zero Trust installation requires OPENSHIFT_VERSION=4.22.x. Current value: ${OPENSHIFT_VERSION}" >&2
-            exit 1
-        fi
         if [ "${NODES_MTU}" != "9000" ]; then
             echo "Error: Zero Trust installation requires NODES_MTU=9000. Current value: ${NODES_MTU}" >&2
             exit 1
