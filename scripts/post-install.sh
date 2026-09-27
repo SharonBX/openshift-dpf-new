@@ -86,9 +86,9 @@ function prepare_zero_trust_service_manifests() {
         return 1
     fi
 
-    log [INFO] "Preparing Zero Trust Chapter 8 DPU service manifests..."
+    log [INFO] "Preparing Zero Trust DPU service manifests..."
 
-    # Keep Chapter 8 outputs isolated from the trusted post-install set.
+    # Keep Zero Trust service outputs isolated from the trusted post-install set.
     find "${GENERATED_ZT_SERVICE_DIR}" -maxdepth 1 -type f -name "*.yaml" -delete
 
     validate_zero_trust_dpu_serials || return 1
@@ -139,7 +139,7 @@ function prepare_zero_trust_service_manifests() {
             "${GENERATED_ZT_SERVICE_DIR}/${manifest}"
     done
 
-    log [INFO] "Zero Trust Chapter 8 DPU service manifests prepared successfully"
+    log [INFO] "Zero Trust DPU service manifests prepared successfully"
 }
 
 function zero_trust_dpudeployment_has_expected_phase() {
@@ -177,7 +177,7 @@ function verify_zero_trust_dpudeployment_created() {
     if [ "${ready_status}" = "True" ]; then
         log [INFO] "Zero Trust DPUDeployment is already Ready (advanced beyond Pending)"
     else
-        log [INFO] "Zero Trust DPUDeployment is Pending as expected before Chapter 8"
+        log [INFO] "Zero Trust DPUDeployment is Pending as expected before DPU service configuration"
     fi
     oc get dpudeployments.svc.dpu.nvidia.com dpudeployment \
         -n dpf-operator-system
@@ -299,7 +299,7 @@ function apply_zero_trust_hosted_cluster_authorization() {
         return 1
     fi
 
-    log [INFO] "Applying Section 8.12 authorization to the hosted DPU cluster..."
+    log [INFO] "Applying authorization to the hosted DPU cluster..."
     retry 5 30 oc --kubeconfig="${hosted_kubeconfig}" apply -f "${rbac_manifest}"
 
     oc --kubeconfig="${hosted_kubeconfig}" get clusterrolebinding \
@@ -310,6 +310,44 @@ function apply_zero_trust_hosted_cluster_authorization() {
         sriov-device-plugin-scc-rolebinding \
         nvidia-k8s-ipam-scc-rolebinding \
         ovs-cni-scc-rolebinding
+}
+
+function print_zero_trust_dpu_provisioning_instructions() {
+    local dpu_node dpu_node_names
+    local dpu_nodes=()
+
+    if ! dpu_node_names=$(oc get dpunodes.provisioning.dpu.nvidia.com \
+        -n dpf-operator-system \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); then
+        log [WARN] "Unable to read DPUNode names for the manual reboot instructions"
+        dpu_node_names=""
+    fi
+
+    while IFS= read -r dpu_node; do
+        [ -n "${dpu_node}" ] || continue
+        dpu_nodes+=("${dpu_node}")
+    done <<< "${dpu_node_names}"
+
+    echo ""
+    echo "================================================================================"
+    echo "DPU provisioning is running - manual action required"
+    echo "================================================================================"
+    echo "Monitor progress:"
+    echo "  oc get dpu -A -w"
+    echo ""
+    echo "For each DPU that reaches the Rebooting phase:"
+    echo "  1. Manually power-cycle the corresponding bare-metal host."
+    echo "  2. After the DPU is back up, run from the jump node console:"
+    if [ "${#dpu_nodes[@]}" -gt 0 ]; then
+        for dpu_node in "${dpu_nodes[@]}"; do
+            printf '     oc -n dpf-operator-system annotate dpunode %s \\\n' "${dpu_node}"
+            echo "       provisioning.dpu.nvidia.com/dpunode-external-reboot-required-"
+        done
+    else
+        printf '     oc -n dpf-operator-system annotate dpunode <dpunode-name> \\\n'
+        echo "       provisioning.dpu.nvidia.com/dpunode-external-reboot-required-"
+    fi
+    echo "================================================================================"
 }
 
 function apply_zero_trust_service_manifests() {
@@ -329,16 +367,17 @@ function apply_zero_trust_service_manifests() {
     local manifest
     for manifest in "${manifests[@]}"; do
         if [ ! -f "${manifest}" ]; then
-            log [ERROR] "Zero Trust Chapter 8 manifest not found: ${manifest}"
+            log [ERROR] "Zero Trust service manifest not found: ${manifest}"
             return 1
         fi
-        log [INFO] "Applying Zero Trust Chapter 8 manifest: $(basename "${manifest}")"
+        log [INFO] "Applying Zero Trust service manifest: $(basename "${manifest}")"
         retry 5 30 apply_manifest "${manifest}" true
     done
 
     wait_for_zero_trust_service_reconciliation
     apply_zero_trust_hosted_cluster_authorization
-    log [INFO] "Zero Trust Chapter 8 DPU services and authorization completed successfully"
+    log [INFO] "Zero Trust DPU services and authorization completed successfully"
+    print_zero_trust_dpu_provisioning_instructions
 }
 
 # Function to update BFB manifest

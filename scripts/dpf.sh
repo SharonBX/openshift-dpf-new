@@ -185,9 +185,9 @@ function deploy_dpf_hcp_provisioner_operator() {
     if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
         # Use the matching private ZT chart/image release until it is published officially.
         DPF_HCP_PROVISIONER_OPERATOR_CHART_URL="oci://quay.io/rh-ee-sbarak/charts/dpf-hcp-provisioner-operator"
-        DPF_HCP_PROVISIONER_OPERATOR_VERSION="0.1.24"
+        DPF_HCP_PROVISIONER_OPERATOR_VERSION="0.1.25"
         DPF_HCP_PROVISIONER_OPERATOR_IMAGE_REPO="quay.io/rh-ee-sbarak/dpf-hcp-provisioner-operator"
-        DPF_HCP_PROVISIONER_OPERATOR_IMAGE_TAG="v0.1.24"
+        DPF_HCP_PROVISIONER_OPERATOR_IMAGE_TAG="v0.1.25"
         log [INFO] "Zero Trust mode: using DPF HCP Provisioner Operator chart ${DPF_HCP_PROVISIONER_OPERATOR_VERSION} and image ${DPF_HCP_PROVISIONER_OPERATOR_IMAGE_REPO}:${DPF_HCP_PROVISIONER_OPERATOR_IMAGE_TAG}"
     fi
 
