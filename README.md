@@ -58,12 +58,15 @@ Complete these manual steps on every DPU BMC before running `make all-zt`:
    curl -k -u root https://<DPU_BMC_IP>/redfish/v1/Systems/Bluefield
    ```
 
-The automation creates the Kubernetes BMC shared-password Secret, but it does
-not change the password or manage the `rshim` service on the physical DPU BMCs.
+4. Provide a numbered serial variable for every DPU: `DPU1_SERIAL`,
+   `DPU2_SERIAL`, `DPU3_SERIAL`, and so on. Every serial value must be
+   lowercase.
 
-Set `DPU1_SERIAL` for the first DPU. Additional DPUs are optional and use
-numbered variables such as `DPU2_SERIAL`, `DPU3_SERIAL`, and so on. Serial
-values must be lowercase.
+   To retrieve a DPU serial number in lowercase, run:
+
+   ```bash
+   curl -k -u root:'BMC root password' https://<DPU_BMC_IP>/redfish/v1/Systems/Bluefield | jq -r '.SerialNumber | ascii_downcase'
+   ```
 
 ## 🏃 Quick Start
 
