@@ -68,6 +68,17 @@ Complete these manual steps on every DPU BMC before running `make all-zt`:
    curl -k -u root:'BMC root password' https://<DPU_BMC_IP>/redfish/v1/Systems/Bluefield | jq -r '.SerialNumber | ascii_downcase'
    ```
 
+### Zero Trust Single-Node OpenShift
+
+Set `VM_COUNT=1` to use an SNO management cluster. `API_VIP` and `INGRESS_VIP`
+are not required. `HYPERSHIFT_API_IP` is ignored, MetalLB is skipped, and the
+hosted control plane uses `SingleReplica`.
+
+The DPU BMCs must still reach the BFB registry. By default, manifest
+preparation resolves `HOST_CLUSTER_API` to the SNO management-node address
+after `make update-etc-hosts`. Multi-node deployments use
+`HYPERSHIFT_API_IP` for the registry address.
+
 ## 🏃 Quick Start
 
 ### 1. Clone and Setup

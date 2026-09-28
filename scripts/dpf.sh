@@ -533,11 +533,15 @@ function configure_hypershift() {
     # Wait for the HostedCluster resource to create the admin-kubeconfig secret with valid data
     wait_for_secret_with_data "${CLUSTERS_NAMESPACE}" "${HOSTED_CLUSTER_NAME}-admin-kubeconfig" "kubeconfig" "${hosted_secret_retries}" 10
 
-    # Create ${HOSTED_CLUSTER_NAME}.kubeconfig file for use by post-install scripts
     log [INFO] "Generating kubeconfig file for ${HOSTED_CLUSTER_NAME}..."
+    local hosted_kubeconfig="${HOSTED_CLUSTER_NAME}.kubeconfig"
+    if [ "$(readlink -m "${KUBECONFIG}")" = "$(readlink -m "${hosted_kubeconfig}")" ]; then
+        log [ERROR] "Management KUBECONFIG value '${KUBECONFIG}' must differ from hosted-cluster kubeconfig '${hosted_kubeconfig}'"
+        return 1
+    fi
+
     local max_attempts=5
     local delay=10
-    # Use retry to generate a valid kubeconfig file
     retry "$max_attempts" "$delay" bash -c '
         ns="$1"; name="$2"
         hypershift create kubeconfig --namespace "$ns" --name "$name" > "$name.kubeconfig" && \
