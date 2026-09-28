@@ -76,12 +76,16 @@ validate-zt-mode:
 		echo "ERROR: all-zt requires NODES_MTU=9000"; \
 		exit 1; \
 	fi
-	@for variable in HYPERSHIFT_API_IP ZT_DPU_BMC_IP_RANGE_START ZT_DPU_BMC_IP_RANGE_END ZT_BMC_ROOT_PASSWORD ZT_BFB_REGISTRY_HOST ZT_BFB_REGISTRY_PORT ZT_DPU_DISCOVERY_NAME; do \
+	@for variable in ZT_DPU_BMC_IP_RANGE_START ZT_DPU_BMC_IP_RANGE_END ZT_BMC_ROOT_PASSWORD ZT_BFB_REGISTRY_PORT ZT_DPU_DISCOVERY_NAME; do \
 		if [ -z "$$(printenv "$$variable")" ]; then \
 			echo "ERROR: Zero Trust installation requires $$variable"; \
 			exit 1; \
 		fi; \
 	done
+	@if [ "$(VM_COUNT)" -gt 1 ] && [ -z "$$HYPERSHIFT_API_IP" ]; then \
+		echo "ERROR: Multi-node Zero Trust installation requires HYPERSHIFT_API_IP"; \
+		exit 1; \
+	fi
 	@$(ENV_SCRIPT) validate-zt-serials
 	@echo "OK  Zero Trust mode validation passed"
 
@@ -671,7 +675,7 @@ help:
 	@echo ""
 	@echo "MetalLB Configuration:"
 	@echo "  HYPERSHIFT_API_IP     - IP address for Hypershift API server LoadBalancer"
-	@echo "                          If set: Deploys MetalLB and uses LoadBalancer for Hypershift API (dpf-hcp-provisioner-operator manages IPAddressPool/L2Advertisement)"
+	@echo "                          Zero Trust MNO also uses it for the BFB registry; Zero Trust SNO ignores it"
 	@echo "                          If not set: Uses NodePort for Hypershift API (multi-node) or default (single-node)"
 	@echo ""
 	@echo "Post-installation Configuration:"

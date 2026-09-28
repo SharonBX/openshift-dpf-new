@@ -31,7 +31,7 @@ spec:
     dmsTimeout: 900
     installInterface:
       installViaRedfish:
-        bfbRegistryAddress: "<ZT_BFB_REGISTRY_HOST>:<ZT_BFB_REGISTRY_PORT>"
+        bfbRegistryAddress: "<BFB_REGISTRY_HOST>:<ZT_BFB_REGISTRY_PORT>"
         bfbRegistry:
           port: <ZT_BFB_REGISTRY_PORT>
         skipDPUNodeDiscovery: false

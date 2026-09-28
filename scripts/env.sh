@@ -258,6 +258,11 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
             echo "Error: Zero Trust installation requires NODES_MTU=9000. Current value: ${NODES_MTU}" >&2
             exit 1
         fi
+
+        if [ "${VM_COUNT}" -eq 1 ]; then
+            HYPERSHIFT_API_IP=""
+            export HYPERSHIFT_API_IP
+        fi
     fi
 
     HELM_CHARTS_DIR=${HELM_CHARTS_DIR:-"$MANIFESTS_DIR/helm-charts-values"}

@@ -184,16 +184,38 @@ function deploy_core_operator_sources() {
 }
 
 # Function to prepare DPF manifests
+resolve_zero_trust_bfb_registry_host() {
+    local -n resolved_host=$1
+
+    if [ "${VM_COUNT}" -gt 1 ]; then
+        if [ -z "${HYPERSHIFT_API_IP:-}" ]; then
+            log "ERROR" "HYPERSHIFT_API_IP must be set for multi-node Zero Trust deployment"
+            return 1
+        fi
+        resolved_host="${HYPERSHIFT_API_IP}"
+        return 0
+    fi
+
+    resolved_host=$(getent ahostsv4 "${HOST_CLUSTER_API}" 2>/dev/null | awk 'NR == 1 { print $1 }' || true)
+    if ! is_valid_ip "${resolved_host}"; then
+        resolved_host=$(find_vm_ip "${VM_PREFIX}" 2>/dev/null || true)
+    fi
+    if ! is_valid_ip "${resolved_host}"; then
+        log "ERROR" "Unable to resolve the SNO management address for the Zero Trust BFB registry"
+        return 1
+    fi
+
+    log "INFO" "Zero Trust SNO: using ${resolved_host} for the BFB registry"
+}
+
 validate_zero_trust_dpf_variables() {
     local missing=0
     local variable
 
     for variable in \
-        HYPERSHIFT_API_IP \
         ZT_DPU_BMC_IP_RANGE_START \
         ZT_DPU_BMC_IP_RANGE_END \
         ZT_BMC_ROOT_PASSWORD \
-        ZT_BFB_REGISTRY_HOST \
         ZT_BFB_REGISTRY_PORT \
         ZT_DPU_DISCOVERY_NAME; do
         if [ -z "${!variable:-}" ]; then
@@ -201,6 +223,11 @@ validate_zero_trust_dpf_variables() {
             missing=1
         fi
     done
+
+    if [ "${VM_COUNT}" -gt 1 ] && [ -z "${HYPERSHIFT_API_IP:-}" ]; then
+        log "ERROR" "HYPERSHIFT_API_IP must be set for multi-node Zero Trust deployment"
+        missing=1
+    fi
 
     validate_zero_trust_dpu_serials || missing=1
 
@@ -305,6 +332,8 @@ prepare_dpf_manifests() {
 
     if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
         validate_zero_trust_dpf_variables || return 1
+        local bfb_registry_host
+        resolve_zero_trust_bfb_registry_host bfb_registry_host || return 1
 
         update_file_multi_replace \
             "$MANIFESTS_DIR/dpf-installation/dpfoperatorconfig-zero-trust.yaml" \
@@ -312,7 +341,7 @@ prepare_dpf_manifests() {
             "<HOST_CLUSTER_API>" "$HOST_CLUSTER_API" \
             "<FLANNEL_CONFIG>" "$flannel_config" \
             "<NODES_MTU>" "$NODES_MTU" \
-            "<ZT_BFB_REGISTRY_HOST>" "$ZT_BFB_REGISTRY_HOST" \
+            "<BFB_REGISTRY_HOST>" "$bfb_registry_host" \
             "<ZT_BFB_REGISTRY_PORT>" "$ZT_BFB_REGISTRY_PORT"
 
         update_file_multi_replace \
