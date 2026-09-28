@@ -348,37 +348,29 @@ prepare_dpf_manifests() {
 }
 
 function enable_storage() {
-    log [INFO] "Configuring Assisted Installer day-1 operators (DPF_DEPLOYMENT_MODE=${DPF_DEPLOYMENT_MODE}, STORAGE_TYPE=${STORAGE_TYPE})"
+    log [INFO] "Enabling storage operator (STORAGE_TYPE=${STORAGE_TYPE})"
 
-    # Assisted Installer only accepts operator changes before installation.
-    if check_cluster_installed; then
-        log [INFO] "Skipping day-1 operator configuration as cluster is already installed"
+    # Skip when user provides their own StorageClasses
+    if [ "${SKIP_DEPLOY_STORAGE}" = "true" ]; then
+        log [INFO] "SKIP_DEPLOY_STORAGE=true: not enabling LSO/LVM operator; using existing StorageClasses (ETCD_STORAGE_CLASS=${ETCD_STORAGE_CLASS})"
         return 0
     fi
 
-    local -a olm_operators=()
+    # Check if cluster is already installed
+    if check_cluster_installed; then
+        log [INFO] "Skipping storage operator configuration as cluster is already installed"
+        return 0
+    fi
 
-    if [ "${SKIP_DEPLOY_STORAGE}" = "true" ]; then
-        log [INFO] "SKIP_DEPLOY_STORAGE=true: not enabling LSO/LVM operator; using existing StorageClasses (ETCD_STORAGE_CLASS=${ETCD_STORAGE_CLASS})"
-    elif [ "${STORAGE_TYPE}" == "odf" ]; then
-        log [INFO] "Enable LSO operator via Assisted Installer OLM (ODF will be deployed post-install)"
-        olm_operators+=("lso")
+    if [ "${STORAGE_TYPE}" == "odf" ]; then
+        log [INFO] "Enable LSO operator via assisted installer OLM (ODF will be deployed post-install)"
+        aicli update cluster "$CLUSTER_NAME" -P olm_operators='[{"name": "lso"}]'
     elif [[ "${OLM_WORKAROUND}" == "true" ]]; then
         log [INFO] "OLM_WORKAROUND=true: LVM will be deployed at finalizing stage using catalog ${CATALOG_SOURCE_NAME}"
     else
-        log [INFO] "Enable LVM operator via Assisted Installer OLM"
-        olm_operators+=("lvm")
+        log [INFO] "Enable LVM operator via assisted installer OLM"
+        aicli update cluster "$CLUSTER_NAME" -P olm_operators='[{"name": "lvm"}]'
     fi
-
-    if [ "${#olm_operators[@]}" -eq 0 ]; then
-        log [INFO] "No Assisted Installer OLM operators need to be enabled"
-        return 0
-    fi
-
-    local olm_operators_json
-    olm_operators_json=$(printf '%s\n' "${olm_operators[@]}" | jq -Rsc 'split("\n")[:-1] | map({name: .})')
-    log [INFO] "Setting Assisted Installer OLM operators: ${olm_operators[*]}"
-    aicli update cluster "$CLUSTER_NAME" -P "olm_operators=${olm_operators_json}"
 }
 
 # -----------------------------------------------------------------------------
