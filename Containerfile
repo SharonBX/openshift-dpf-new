@@ -26,5 +26,3 @@ COPY . .
 # Make workspace writable for OpenShift's arbitrary user IDs
 # Note: SSH keys should NOT be in the image - they're mounted at runtime from secrets
 RUN chmod 777 /root/dpf-ci -R
-
-ENTRYPOINT ["bash"]
