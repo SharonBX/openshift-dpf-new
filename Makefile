@@ -74,26 +74,7 @@ _all-zt: $(ZT_ALL_STEPS)
 
 .PHONY: validate-zt-mode
 validate-zt-mode:
-	@if [ "$(DPF_DEPLOYMENT_MODE)" != "zero-trust" ]; then \
-		echo "ERROR: all-zt requires DPF_DEPLOYMENT_MODE=zero-trust"; \
-		exit 1; \
-	fi
-	@if [ "$(NODES_MTU)" != "9000" ]; then \
-		echo "ERROR: all-zt requires NODES_MTU=9000"; \
-		exit 1; \
-	fi
-	@for variable in ZT_DPU_BMC_IP_RANGE_START ZT_DPU_BMC_IP_RANGE_END ZT_BMC_ROOT_PASSWORD ZT_BFB_REGISTRY_PORT ZT_DPU_DISCOVERY_NAME; do \
-		if [ -z "$$(printenv "$$variable")" ]; then \
-			echo "ERROR: Zero Trust installation requires $$variable"; \
-			exit 1; \
-		fi; \
-	done
-	@if [ "$(VM_COUNT)" -gt 1 ] && [ -z "$$HYPERSHIFT_API_IP" ]; then \
-		echo "ERROR: Multi-node Zero Trust installation requires HYPERSHIFT_API_IP"; \
-		exit 1; \
-	fi
-	@$(ENV_SCRIPT) validate-zt-serials
-	@echo "OK  Zero Trust mode validation passed"
+	@$(ENV_SCRIPT) validate-zt-mode
 
 .PHONY: verify-files
 verify-files:

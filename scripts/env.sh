@@ -266,6 +266,37 @@ validate_zero_trust_dpu_serials() {
     [ "${invalid}" -eq 0 ]
 }
 
+validate_zero_trust_mode() {
+    local variable
+
+    if [ "${DPF_DEPLOYMENT_MODE:-}" != "zero-trust" ]; then
+        echo "ERROR: all-zt requires DPF_DEPLOYMENT_MODE=zero-trust" >&2
+        return 1
+    fi
+    if [ "${NODES_MTU:-}" != "9000" ]; then
+        echo "ERROR: all-zt requires NODES_MTU=9000" >&2
+        return 1
+    fi
+    for variable in \
+        ZT_DPU_BMC_IP_RANGE_START \
+        ZT_DPU_BMC_IP_RANGE_END \
+        ZT_BMC_ROOT_PASSWORD \
+        ZT_BFB_REGISTRY_PORT \
+        ZT_DPU_DISCOVERY_NAME; do
+        if [ -z "${!variable:-}" ]; then
+            echo "ERROR: Zero Trust installation requires ${variable}" >&2
+            return 1
+        fi
+    done
+    if [ "${VM_COUNT:-0}" -gt 1 ] && [ -z "${HYPERSHIFT_API_IP:-}" ]; then
+        echo "ERROR: Multi-node Zero Trust installation requires HYPERSHIFT_API_IP" >&2
+        return 1
+    fi
+
+    validate_zero_trust_dpu_serials || return 1
+    echo "OK  Zero Trust mode validation passed"
+}
+
 # Load environment variables from .env file and validate aicli connectivity
 # (skip load/validate if already in Make context — the Makefile does
 # `include .env` + `export`). Still strip quotes Make left on values;
@@ -382,9 +413,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         validate-zt-serials)
             validate_zero_trust_dpu_serials
             ;;
+        validate-zt-mode)
+            validate_zero_trust_mode
+            ;;
         *)
             echo "ERROR: Unknown command: $command"
-            echo "Available commands: validate-env-files, generate-env, validate-env-test-files, generate-env-test, validate-zt-serials"
+            echo "Available commands: validate-env-files, generate-env, validate-env-test-files, generate-env-test, validate-zt-serials, validate-zt-mode"
             exit 1
             ;;
     esac

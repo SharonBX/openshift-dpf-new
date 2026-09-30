@@ -41,14 +41,12 @@ SPECIAL_FILES=(
     "dpu-node-ipam-controller.yaml"
     "dpudeployment.yaml"
     "nodesriovdevicepluginconfig.yaml"
-    "bfb-zero-trust.yaml"
     "dpuflavor-zero-trust.yaml"
     "dpudeployment-zero-trust.yaml"
     "dpuserviceinterface-zero-trust.yaml"
     "dpuserviceipam-zero-trust.yaml"
     "dpuservicenad-zero-trust.yaml"
     "dpuservicetemplate-zero-trust.yaml"
-    "dpu-services-scc-zero-trust.yaml"
 )
 
 function prepare_zero_trust_provisioning_manifests() {
@@ -69,7 +67,7 @@ function prepare_zero_trust_provisioning_manifests() {
         "<NUM_VFS>" "${NUM_VFS}"
 
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/bfb-zero-trust.yaml" \
+        "${POST_INSTALL_DIR}/bfb.yaml" \
         "${GENERATED_POST_INSTALL_DIR}/bfb.yaml" \
         "<BFB_URL>" "${BFB_URL}"
 
@@ -132,12 +130,15 @@ function prepare_zero_trust_service_manifests() {
     for manifest in \
         dpuserviceinterface-zero-trust.yaml \
         dpuserviceipam-zero-trust.yaml \
-        dpuservicenad-zero-trust.yaml \
-        dpu-services-scc-zero-trust.yaml; do
+        dpuservicenad-zero-trust.yaml; do
         update_file_multi_replace \
             "${POST_INSTALL_DIR}/${manifest}" \
             "${GENERATED_ZT_SERVICE_DIR}/${manifest}"
     done
+
+    update_file_multi_replace \
+        "${POST_INSTALL_DIR}/dpu-services-scc.yaml" \
+        "${GENERATED_ZT_SERVICE_DIR}/dpu-services-scc.yaml"
 
     log [INFO] "Zero Trust DPU service manifests prepared successfully"
 }
@@ -290,7 +291,7 @@ function write_zero_trust_hosted_kubeconfig() {
 
 function apply_zero_trust_hosted_cluster_authorization() {
     local hosted_kubeconfig="${GENERATED_ZT_SERVICE_DIR}/${HOSTED_CLUSTER_NAME}.kubeconfig"
-    local rbac_manifest="${GENERATED_ZT_SERVICE_DIR}/dpu-services-scc-zero-trust.yaml"
+    local rbac_manifest="${GENERATED_ZT_SERVICE_DIR}/dpu-services-scc.yaml"
 
     write_zero_trust_hosted_kubeconfig
 
@@ -303,13 +304,7 @@ function apply_zero_trust_hosted_cluster_authorization() {
     retry 5 30 oc --kubeconfig="${hosted_kubeconfig}" apply -f "${rbac_manifest}"
 
     oc --kubeconfig="${hosted_kubeconfig}" get clusterrolebinding \
-        flannel-scc-rolebinding \
-        doca-hbn-scc-rolebinding \
-        ovn-dpu-scc-rolebinding \
-        ovn-kubernetes-node-scc-rolebinding \
-        sriov-device-plugin-scc-rolebinding \
-        nvidia-k8s-ipam-scc-rolebinding \
-        ovs-cni-scc-rolebinding
+        dpf-system-scc-privileged
 }
 
 function print_zero_trust_dpu_provisioning_instructions() {
