@@ -73,6 +73,32 @@ Set `VM_COUNT=1` to use an SNO management cluster. `API_VIP` and `INGRESS_VIP`
 are not required. `HYPERSHIFT_API_IP` is ignored, MetalLB is skipped, and the
 hosted control plane uses `SingleReplica`.
 
+Add the SNO management-node network configuration to `user.env`:
+
+```bash
+# Zero Trust SNO management cluster
+export VM_COUNT=1
+export VM_STATIC_IP=true
+export VM_EXT_IPS=10.6.135.30
+export VM_EXT_PL=24
+export VM_GW=10.6.135.254
+export VM_DNS=10.11.5.160
+```
+
+Replace the example values with the environment's reserved SNO address,
+prefix length, gateway, and DNS server. The address in `VM_EXT_IPS` must be
+unused before deployment, and DNS must resolve
+`api.<CLUSTER_NAME>.<BASE_DOMAIN>` to that address so DPUs can reach the
+management API.
+
+Generate `.env` and confirm that the static network values were preserved:
+
+```bash
+source user.env
+make generate-env FORCE=true
+grep -E '^VM_(COUNT|STATIC_IP|EXT_IPS|EXT_PL|GW|DNS)=' .env
+```
+
 The DPU BMCs must still reach the BFB registry. By default, manifest
 preparation resolves `HOST_CLUSTER_API` to the SNO management-node address
 after `make update-etc-hosts`. Multi-node deployments use
