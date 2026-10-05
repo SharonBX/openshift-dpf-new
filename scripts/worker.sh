@@ -294,22 +294,6 @@ EOF
     retry 5 10 apply_manifest "${WORKER_GENERATED_DIR}/${name}-network-data.yaml" true
 }
 
-_ipv4_to_integer() {
-    local ip="$1"
-    local first second third fourth extra
-    IFS=. read -r first second third fourth extra <<< "${ip}"
-
-    if [ -n "${extra}" ] ||
-       ! [[ "${first}" =~ ^[0-9]+$ && "${second}" =~ ^[0-9]+$ &&
-            "${third}" =~ ^[0-9]+$ && "${fourth}" =~ ^[0-9]+$ ]] ||
-       [ "$((10#${first}))" -gt 255 ] || [ "$((10#${second}))" -gt 255 ] ||
-       [ "$((10#${third}))" -gt 255 ] || [ "$((10#${fourth}))" -gt 255 ]; then
-        return 1
-    fi
-
-    printf '%u\n' "$(( (10#${first} << 24) + (10#${second} << 16) + (10#${third} << 8) + 10#${fourth} ))"
-}
-
 _integer_to_ipv4() {
     local value="$1"
     printf '%d.%d.%d.%d\n' \
@@ -334,32 +318,16 @@ _dpu_redfish_ready() {
 }
 
 wait_for_zero_trust_dpu_redfish() {
-    if [ "${DPF_DEPLOYMENT_MODE:-host-trusted}" != "zero-trust" ]; then
+    if [ "${DPF_DEPLOYMENT_MODE}" != "zero-trust" ]; then
         return 0
     fi
 
-    local start_ip="${ZT_DPU_BMC_IP_RANGE_START:-}"
-    local end_ip="${ZT_DPU_BMC_IP_RANGE_END:-}"
-    local password="${ZT_BMC_ROOT_PASSWORD:-}"
-    local timeout="${WORKER_POWER_ON_DELAY:-180}"
+    validate_zero_trust_redfish_configuration || return 1
+
     local interval=10
-
-    if [ -z "${start_ip}" ] || [ -z "${end_ip}" ] || [ -z "${password}" ]; then
-        log "ERROR" "Zero Trust Redfish readiness requires the DPU BMC IP range and root password"
-        return 1
-    fi
-    if ! [[ "${timeout}" =~ ^[0-9]+$ ]]; then
-        log "ERROR" "WORKER_POWER_ON_DELAY must be a non-negative integer"
-        return 1
-    fi
-
     local start_value end_value
-    if ! start_value=$(_ipv4_to_integer "${start_ip}") ||
-       ! end_value=$(_ipv4_to_integer "${end_ip}") ||
-       [ "${start_value}" -gt "${end_value}" ]; then
-        log "ERROR" "Invalid Zero Trust DPU BMC IP range: ${start_ip}-${end_ip}"
-        return 1
-    fi
+    start_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_START}")
+    end_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_END}")
 
     local expected=0 variable
     while IFS= read -r variable; do
@@ -376,11 +344,11 @@ wait_for_zero_trust_dpu_redfish() {
     curl_config=$(mktemp "${TMPDIR:-/tmp}/dpu-redfish-curl.XXXXXX")
     chmod 600 "${curl_config}"
     trap 'rm -f "${curl_config}"' EXIT
-    escaped_password="${password//\\/\\\\}"
+    escaped_password="${ZT_BMC_ROOT_PASSWORD//\\/\\\\}"
     escaped_password="${escaped_password//\"/\\\"}"
     printf 'user = "root:%s"\n' "${escaped_password}" > "${curl_config}"
 
-    log "INFO" "Waiting up to ${timeout}s for ${expected} DPU Redfish endpoint(s) in ${start_ip}-${end_ip}..."
+    log "INFO" "Waiting up to ${WORKER_POWER_ON_DELAY}s for ${expected} DPU Redfish endpoint(s) in ${ZT_DPU_BMC_IP_RANGE_START}-${ZT_DPU_BMC_IP_RANGE_END}..."
 
     local started_at current_time elapsed reachable address_value ip
     started_at=$(date +%s)
@@ -388,6 +356,9 @@ wait_for_zero_trust_dpu_redfish() {
         reachable=0
         address_value="${start_value}"
         while [ "${address_value}" -le "${end_value}" ]; do
+            if [ $(( $(date +%s) - started_at )) -ge "${WORKER_POWER_ON_DELAY}" ]; then
+                break
+            fi
             ip=$(_integer_to_ipv4 "${address_value}")
             if _dpu_redfish_ready "${ip}" "${curl_config}"; then
                 reachable=$((reachable + 1))
@@ -403,10 +374,10 @@ wait_for_zero_trust_dpu_redfish() {
 
         current_time=$(date +%s)
         elapsed=$((current_time - started_at))
-        if [ "${elapsed}" -ge "${timeout}" ]; then
+        if [ "${elapsed}" -ge "${WORKER_POWER_ON_DELAY}" ]; then
             rm -f "${curl_config}"
             trap - EXIT
-            log "ERROR" "Only ${reachable}/${expected} DPU Redfish endpoint(s) became ready within ${timeout}s"
+            log "ERROR" "Only ${reachable}/${expected} DPU Redfish endpoint(s) became ready within ${WORKER_POWER_ON_DELAY}s"
             return 1
         fi
 
@@ -415,8 +386,26 @@ wait_for_zero_trust_dpu_redfish() {
     done
 }
 
+poweron_workers() {
+    poweron_all_workers || return 1
+
+    if [ "${WORKER_COUNT:-0}" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        wait_for_zero_trust_dpu_redfish
+        return
+    fi
+
+    validate_worker_power_on_delay || return 1
+
+    log "INFO" "Waiting ${WORKER_POWER_ON_DELAY}s for worker hosts/DPUs to settle before provisioning..."
+    sleep "${WORKER_POWER_ON_DELAY}"
+}
+
 provision_all_workers() {
-    if [[ "${DPF_DEPLOYMENT_MODE:-host-trusted}" == "zero-trust" ]]; then
+    if [[ "${DPF_DEPLOYMENT_MODE}" == "zero-trust" ]]; then
         log "ERROR" "add-worker-nodes is a host-trusted operation; Zero Trust discovers and provisions DPUs through Redfish/OOB during deploy-dpf"
         return 1
     fi
@@ -712,10 +701,11 @@ case "${1:-}" in
     delete-csr-auto-approver) delete_csr_auto_approver ;;
     delete-worker) delete_worker "${2:-}" ;;
     shutoff-all-workers) shutoff_all_workers ;;
+    poweron-workers) poweron_workers ;;
     poweron-all-workers) poweron_all_workers ;;
     wait-for-dpu-redfish) wait_for_zero_trust_dpu_redfish ;;
     *)
-        echo "Usage: $0 {provision-all-workers|approve-worker-csrs|display-worker-status|display-manual-csr-instructions|apply-short-worker-hostnames|deploy-csr-auto-approver|delete-csr-auto-approver|delete-worker <bmh-name|machine-name|node-name>|shutoff-all-workers|poweron-all-workers|wait-for-dpu-redfish}"
+        echo "Usage: $0 {provision-all-workers|approve-worker-csrs|display-worker-status|display-manual-csr-instructions|apply-short-worker-hostnames|deploy-csr-auto-approver|delete-csr-auto-approver|delete-worker <bmh-name|machine-name|node-name>|shutoff-all-workers|poweron-workers|poweron-all-workers|wait-for-dpu-redfish}"
         exit 1
         ;;
 esac

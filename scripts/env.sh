@@ -136,6 +136,10 @@ _do_generate_env() {
         source "$defaults_file"
         set +a
         source "$required_file"
+        if [ "$(basename "${required_file}")" = "env.required" ] &&
+           [ "${DPF_DEPLOYMENT_MODE:-}" = "zero-trust" ]; then
+            validate_zero_trust_mode
+        fi
         envsubst < "$template_file" > "$output_file"
 
         # Persist optional DPU3_SERIAL, DPU4_SERIAL, ... variables supplied by
@@ -266,21 +270,73 @@ validate_zero_trust_dpu_serials() {
     [ "${invalid}" -eq 0 ]
 }
 
+_ipv4_to_integer() {
+    local ip="$1"
+    local first second third fourth extra
+    IFS=. read -r first second third fourth extra <<< "${ip}"
+
+    if [ -n "${extra}" ] ||
+       ! [[ "${first}" =~ ^[0-9]+$ && "${second}" =~ ^[0-9]+$ &&
+            "${third}" =~ ^[0-9]+$ && "${fourth}" =~ ^[0-9]+$ ]] ||
+       [ "$((10#${first}))" -gt 255 ] || [ "$((10#${second}))" -gt 255 ] ||
+       [ "$((10#${third}))" -gt 255 ] || [ "$((10#${fourth}))" -gt 255 ]; then
+        return 1
+    fi
+
+    printf '%u\n' "$(( (10#${first} << 24) + (10#${second} << 16) + (10#${third} << 8) + 10#${fourth} ))"
+}
+
+validate_worker_power_on_delay() {
+    if ! [[ "${WORKER_POWER_ON_DELAY}" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: WORKER_POWER_ON_DELAY must be a non-negative integer" >&2
+        return 1
+    fi
+}
+
+validate_zero_trust_redfish_configuration() {
+    [ "${DPF_DEPLOYMENT_MODE:-host-trusted}" = "zero-trust" ] || return 0
+
+    local variable
+    for variable in \
+        ZT_DPU_BMC_IP_RANGE_START \
+        ZT_DPU_BMC_IP_RANGE_END \
+        ZT_BMC_ROOT_PASSWORD; do
+        if [ -z "${!variable:-}" ]; then
+            echo "ERROR: Zero Trust installation requires ${variable}" >&2
+            return 1
+        fi
+    done
+
+    validate_worker_power_on_delay || return 1
+
+    local start_value end_value
+    if ! start_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_START}") ||
+       ! end_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_END}") ||
+       [ "${start_value}" -gt "${end_value}" ]; then
+        echo "ERROR: Invalid Zero Trust DPU BMC IP range: ${ZT_DPU_BMC_IP_RANGE_START}-${ZT_DPU_BMC_IP_RANGE_END}" >&2
+        return 1
+    fi
+}
+
 validate_zero_trust_mode() {
     local variable
 
     if [ "${DPF_DEPLOYMENT_MODE:-}" != "zero-trust" ]; then
-        echo "ERROR: all-zt requires DPF_DEPLOYMENT_MODE=zero-trust" >&2
+        echo "ERROR: Zero Trust validation requires DPF_DEPLOYMENT_MODE=zero-trust" >&2
         return 1
     fi
     if [ "${NODES_MTU:-}" != "9000" ]; then
         echo "ERROR: all-zt requires NODES_MTU=9000" >&2
         return 1
     fi
+    if [ "${HYPERSHIFT_INSTALL_METHOD:-}" != "binary" ]; then
+        echo "ERROR: Zero Trust installation requires HYPERSHIFT_INSTALL_METHOD=binary" >&2
+        return 1
+    fi
+    validate_zero_trust_redfish_configuration || return 1
+
     for variable in \
-        ZT_DPU_BMC_IP_RANGE_START \
-        ZT_DPU_BMC_IP_RANGE_END \
-        ZT_BMC_ROOT_PASSWORD \
+        BFB_URL \
         ZT_BFB_REGISTRY_PORT \
         ZT_DPU_DISCOVERY_NAME; do
         if [ -z "${!variable:-}" ]; then
@@ -288,7 +344,7 @@ validate_zero_trust_mode() {
             return 1
         fi
     done
-    if [ "${VM_COUNT:-0}" -gt 1 ] && [ -z "${HYPERSHIFT_API_IP:-}" ]; then
+    if [ "${VM_COUNT}" -gt 1 ] && [ -z "${HYPERSHIFT_API_IP:-}" ]; then
         echo "ERROR: Multi-node Zero Trust installation requires HYPERSHIFT_API_IP" >&2
         return 1
     fi

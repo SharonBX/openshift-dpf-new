@@ -13,6 +13,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/cluster.sh"
 # Configuration
 MANIFESTS_DIR=${MANIFESTS_DIR:-"manifests"}
 POST_INSTALL_DIR="${MANIFESTS_DIR}/post-installation"
+COMMON_POST_INSTALL_DIR="${POST_INSTALL_DIR}/common"
+HOST_TRUSTED_POST_INSTALL_DIR="${POST_INSTALL_DIR}/host-trusted"
+ZERO_TRUST_POST_INSTALL_DIR="${POST_INSTALL_DIR}/zero-trust"
 GENERATED_DIR=${GENERATED_DIR:-"$MANIFESTS_DIR/generated"}
 GENERATED_POST_INSTALL_DIR="${GENERATED_DIR}/post-install"
 GENERATED_ZT_SERVICE_DIR="${GENERATED_DIR}/zero-trust-services"
@@ -29,8 +32,7 @@ mkdir -p "${GENERATED_POST_INSTALL_DIR}"
 mkdir -p "${GENERATED_ZT_SERVICE_DIR}"
 
 # List of files that need special processing (excluded from direct copy)
-SPECIAL_FILES=(
-    "bfb.yaml"
+HOST_TRUSTED_SPECIAL_FILES=(
     "hbn-ovn-ipam.yaml"
     "dpu-service-nads.yaml"
     "dpuflavor-1500.yaml"
@@ -41,12 +43,6 @@ SPECIAL_FILES=(
     "dpu-node-ipam-controller.yaml"
     "dpudeployment.yaml"
     "nodesriovdevicepluginconfig.yaml"
-    "dpuflavor-zero-trust.yaml"
-    "dpudeployment-zero-trust.yaml"
-    "dpuserviceinterface-zero-trust.yaml"
-    "dpuserviceipam-zero-trust.yaml"
-    "dpuservicenad-zero-trust.yaml"
-    "dpuservicetemplate-zero-trust.yaml"
 )
 
 function prepare_zero_trust_provisioning_manifests() {
@@ -56,23 +52,18 @@ function prepare_zero_trust_provisioning_manifests() {
     # with the Zero Trust provisioning set.
     find "${GENERATED_POST_INSTALL_DIR}" -maxdepth 1 -type f -name "*.yaml" -delete
 
-    if [ -z "${BFB_URL}" ]; then
-        log [ERROR] "BFB_URL must be set for Zero Trust provisioning"
-        return 1
-    fi
-
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/dpuflavor-zero-trust.yaml" \
+        "${ZERO_TRUST_POST_INSTALL_DIR}/dpuflavor.yaml" \
         "${GENERATED_POST_INSTALL_DIR}/dpuflavor.yaml" \
         "<NUM_VFS>" "${NUM_VFS}"
 
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/bfb.yaml" \
+        "${COMMON_POST_INSTALL_DIR}/bfb.yaml" \
         "${GENERATED_POST_INSTALL_DIR}/bfb.yaml" \
         "<BFB_URL>" "${BFB_URL}"
 
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/dpudeployment-zero-trust.yaml" \
+        "${ZERO_TRUST_POST_INSTALL_DIR}/dpudeployment.yaml" \
         "${GENERATED_POST_INSTALL_DIR}/dpudeployment.yaml"
 
     log [INFO] "Zero Trust provisioning manifests prepared successfully"
@@ -117,27 +108,31 @@ function prepare_zero_trust_service_manifests() {
     done < <(list_dpu_serial_variables)
 
     local hbn_helm_repo_url="${HBN_HELM_REPO_URL:-https://helm.ngc.nvidia.com/nvidia/doca}"
+    local hbn_helm_chart_version="${HBN_HELM_CHART_VERSION:-3.4.0}"
     local hbn_image_repo="${HBN_IMAGE_REPO:-nvcr.io/nvidia/doca/doca_hbn}"
+    local hbn_image_tag="${HBN_IMAGE_TAG:-3.4.0-doca3.4.0}"
 
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/dpuservicetemplate-zero-trust.yaml" \
+        "${ZERO_TRUST_POST_INSTALL_DIR}/dpuservicetemplate.yaml" \
         "${GENERATED_ZT_SERVICE_DIR}/dpuservicetemplate-zero-trust.yaml" \
         "<HBN_HELM_REPO_URL>" "${hbn_helm_repo_url}" \
+        "<HBN_HELM_CHART_VERSION>" "${hbn_helm_chart_version}" \
         "<HBN_IMAGE_REPO>" "${hbn_image_repo}" \
+        "<HBN_IMAGE_TAG>" "${hbn_image_tag}" \
         "<DPU_VALUES>" "${dpu_values}"
 
     local manifest
     for manifest in \
-        dpuserviceinterface-zero-trust.yaml \
-        dpuserviceipam-zero-trust.yaml \
-        dpuservicenad-zero-trust.yaml; do
+        dpuserviceinterface \
+        dpuserviceipam \
+        dpuservicenad; do
         update_file_multi_replace \
-            "${POST_INSTALL_DIR}/${manifest}" \
-            "${GENERATED_ZT_SERVICE_DIR}/${manifest}"
+            "${ZERO_TRUST_POST_INSTALL_DIR}/${manifest}.yaml" \
+            "${GENERATED_ZT_SERVICE_DIR}/${manifest}-zero-trust.yaml"
     done
 
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/dpu-services-scc.yaml" \
+        "${COMMON_POST_INSTALL_DIR}/dpu-services-scc.yaml" \
         "${GENERATED_ZT_SERVICE_DIR}/dpu-services-scc.yaml"
 
     log [INFO] "Zero Trust DPU service manifests prepared successfully"
@@ -184,6 +179,50 @@ function verify_zero_trust_dpudeployment_created() {
         -n dpf-operator-system
 }
 
+function dpfhcp_provisioner_is_ready() {
+    local phase
+    phase=$(oc get dpfhcpprovisioner.provisioning.dpu.hcp.io \
+        "${HOSTED_CLUSTER_NAME}" \
+        -n "${CLUSTERS_NAMESPACE}" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    [ "${phase}" = "Ready" ]
+}
+
+function wait_for_dpfhcp_provisioner_ready() {
+    local get_output
+    if ! get_output=$(oc get dpfhcpprovisioner.provisioning.dpu.hcp.io \
+        "${HOSTED_CLUSTER_NAME}" \
+        -n "${CLUSTERS_NAMESPACE}" -o name 2>&1); then
+        if ! grep -Eq 'NotFound|not found|doesn.t have a resource type' <<< "${get_output}"; then
+            log [ERROR] "Failed to query DPFHCPProvisioner: ${get_output}"
+            return 1
+        fi
+        if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+            log [ERROR] "DPFHCPProvisioner ${CLUSTERS_NAMESPACE}/${HOSTED_CLUSTER_NAME} was not found"
+            return 1
+        fi
+        log [INFO] "DPFHCPProvisioner is not configured; skipping its readiness check"
+        return 0
+    fi
+
+    log [INFO] "Waiting for DPFHCPProvisioner to become Ready..."
+    if ! retry 180 10 dpfhcp_provisioner_is_ready; then
+        log [ERROR] "DPFHCPProvisioner ${HOSTED_CLUSTER_NAME} did not become Ready within 30 minutes"
+        oc get dpfhcpprovisioner.provisioning.dpu.hcp.io \
+            "${HOSTED_CLUSTER_NAME}" \
+            -n "${CLUSTERS_NAMESPACE}" \
+            -o yaml || true
+        oc get dpucluster.provisioning.dpu.nvidia.com \
+            "${HOSTED_CLUSTER_NAME}" \
+            -n dpf-operator-system \
+            -o yaml || true
+        return 1
+    fi
+
+    oc get dpfhcpprovisioner.provisioning.dpu.hcp.io \
+        "${HOSTED_CLUSTER_NAME}" -n "${CLUSTERS_NAMESPACE}"
+}
+
 function apply_zero_trust_provisioning_manifests() {
     local flavor_manifest="${GENERATED_POST_INSTALL_DIR}/dpuflavor.yaml"
     local bfb_manifest="${GENERATED_POST_INSTALL_DIR}/bfb.yaml"
@@ -212,6 +251,7 @@ function apply_zero_trust_provisioning_manifests() {
     log [INFO] "Applying Zero Trust DPUDeployment..."
     apply_manifest "${deployment_manifest}" true
     verify_zero_trust_dpudeployment_created
+    wait_for_dpfhcp_provisioner_ready
 
     log [INFO] "Zero Trust DPU provisioning resources applied successfully"
 }
@@ -251,49 +291,14 @@ function wait_for_zero_trust_service_reconciliation() {
     oc get dpuservicechains.svc.dpu.nvidia.com -n dpf-operator-system
 }
 
-function write_zero_trust_hosted_kubeconfig() {
-    local secret_name="${HOSTED_CLUSTER_NAME}-admin-kubeconfig"
-    local secret_namespace="${CLUSTERS_NAMESPACE}"
-    local hosted_kubeconfig="${GENERATED_ZT_SERVICE_DIR}/${HOSTED_CLUSTER_NAME}.kubeconfig"
-    local temporary_kubeconfig="${hosted_kubeconfig}.tmp"
-    local encoded_kubeconfig
-
-    log [INFO] "Retrieving the hosted-cluster kubeconfig for Zero Trust authorization..."
-    if ! retry 60 10 oc get secret \
-        "${secret_name}" \
-        -n "${secret_namespace}"; then
-        secret_namespace="dpf-operator-system"
-        log [WARN] "Hosted kubeconfig Secret not found in ${CLUSTERS_NAMESPACE}; checking ${secret_namespace}"
-        retry 60 10 oc get secret \
-            "${secret_name}" \
-            -n "${secret_namespace}"
-    fi
-
-    encoded_kubeconfig=$(oc get secret \
-        "${secret_name}" \
-        -n "${secret_namespace}" \
-        -o jsonpath='{.data.kubeconfig}')
-    if [ -z "${encoded_kubeconfig}" ]; then
-        log [ERROR] "Secret ${secret_namespace}/${secret_name} has no kubeconfig data"
-        return 1
-    fi
-
-    if ! printf '%s' "${encoded_kubeconfig}" | base64 --decode > "${temporary_kubeconfig}"; then
-        log [ERROR] "Failed to decode the hosted-cluster kubeconfig"
-        return 1
-    fi
-    chmod 600 "${temporary_kubeconfig}"
-    mv -f "${temporary_kubeconfig}" "${hosted_kubeconfig}"
-
-    retry 60 10 oc --kubeconfig="${hosted_kubeconfig}" get namespace dpf-operator-system
-    log [INFO] "Hosted-cluster kubeconfig is ready at ${hosted_kubeconfig}"
-}
-
 function apply_zero_trust_hosted_cluster_authorization() {
-    local hosted_kubeconfig="${GENERATED_ZT_SERVICE_DIR}/${HOSTED_CLUSTER_NAME}.kubeconfig"
     local rbac_manifest="${GENERATED_ZT_SERVICE_DIR}/dpu-services-scc.yaml"
 
-    write_zero_trust_hosted_kubeconfig
+    if ! ensure_hosted_kubeconfig; then
+        log [ERROR] "Hosted-cluster kubeconfig is required for Zero Trust authorization"
+        return 1
+    fi
+    wait_for_hosted_cluster_api "${HOSTED_KUBECONFIG}" 60 10 || return 1
 
     if [ ! -f "${rbac_manifest}" ]; then
         log [ERROR] "Zero Trust hosted-cluster RBAC manifest not found: ${rbac_manifest}"
@@ -301,9 +306,9 @@ function apply_zero_trust_hosted_cluster_authorization() {
     fi
 
     log [INFO] "Applying authorization to the hosted DPU cluster..."
-    retry 5 30 oc --kubeconfig="${hosted_kubeconfig}" apply -f "${rbac_manifest}"
+    retry 5 30 oc --kubeconfig="${HOSTED_KUBECONFIG}" apply -f "${rbac_manifest}"
 
-    oc --kubeconfig="${hosted_kubeconfig}" get clusterrolebinding \
+    oc --kubeconfig="${HOSTED_KUBECONFIG}" get clusterrolebinding \
         dpf-system-scc-privileged
 }
 
@@ -380,7 +385,7 @@ function update_bfb_manifest() {
     log [INFO] "Updating BFB manifest..."
     # Update the manifest with custom values using update_file_multi_replace
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/bfb.yaml" \
+        "${COMMON_POST_INSTALL_DIR}/bfb.yaml" \
         "${GENERATED_POST_INSTALL_DIR}/bfb.yaml" \
         "<BFB_URL>" "\"${BFB_URL}\""
     log [INFO] "BFB manifest updated successfully"
@@ -397,19 +402,19 @@ function update_hbn_ovn_manifests() {
     fi
     # Update hbn-ovn-ipam.yaml
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/hbn-ovn-ipam.yaml" \
+        "${HOST_TRUSTED_POST_INSTALL_DIR}/hbn-ovn-ipam.yaml" \
         "${GENERATED_POST_INSTALL_DIR}/hbn-ovn-ipam.yaml" \
         "<VTEP_CIDR>" \
         "${VTEP_CIDR}"
 
     # Update ovn-configuration.yaml for DPUDeployment
-    if [ -f "${POST_INSTALL_DIR}/ovn-configuration.yaml" ]; then
+    if [ -f "${HOST_TRUSTED_POST_INSTALL_DIR}/ovn-configuration.yaml" ]; then
         # OVN-Kubernetes uses 100 bytes of overhead for Geneve encapsulation.
         local ovn_mtu=$((NODES_MTU - 100))
 
         log "INFO" "ovn-configuration will be set with MTU:$ovn_mtu"
         update_file_multi_replace \
-            "${POST_INSTALL_DIR}/ovn-configuration.yaml" \
+            "${HOST_TRUSTED_POST_INSTALL_DIR}/ovn-configuration.yaml" \
             "${GENERATED_POST_INSTALL_DIR}/ovn-configuration.yaml" \
             "<VTEP_CIDR>" "${VTEP_CIDR}" \
             "<HOST_CLUSTER_API>" "${HOST_CLUSTER_API}" \
@@ -418,9 +423,9 @@ function update_hbn_ovn_manifests() {
     fi
 
     # Update hbn-configuration.yaml
-    if [ -f "${POST_INSTALL_DIR}/hbn-configuration.yaml" ]; then
+    if [ -f "${HOST_TRUSTED_POST_INSTALL_DIR}/hbn-configuration.yaml" ]; then
         update_file_multi_replace \
-            "${POST_INSTALL_DIR}/hbn-configuration.yaml" \
+            "${HOST_TRUSTED_POST_INSTALL_DIR}/hbn-configuration.yaml" \
             "${GENERATED_POST_INSTALL_DIR}/hbn-configuration.yaml"
     fi
 
@@ -444,7 +449,7 @@ function update_vf_configuration() {
 
     # Copy and process the appropriate source file as dpuflavor.yaml
     update_file_multi_replace \
-        "${POST_INSTALL_DIR}/$mtu_source_file" \
+        "${HOST_TRUSTED_POST_INSTALL_DIR}/$mtu_source_file" \
         "${GENERATED_POST_INSTALL_DIR}/dpuflavor.yaml" \
         "<NUM_VFS>" "${NUM_VFS}"
 
@@ -486,9 +491,9 @@ function update_ipam_controller() {
     # Update IPAM controller manifest (skip for OCP >= 4.22 where Hypershift handles node CIDR allocation natively)
     if ocp_version_gte "${OPENSHIFT_VERSION}" "4.22"; then
         log [INFO] "OCP ${OPENSHIFT_VERSION} >= 4.22: skipping dpu-node-ipam-controller (node CIDR allocation handled by Hypershift)"
-    elif [ -f "${POST_INSTALL_DIR}/dpu-node-ipam-controller.yaml" ]; then
+    elif [ -f "${HOST_TRUSTED_POST_INSTALL_DIR}/dpu-node-ipam-controller.yaml" ]; then
         update_file_multi_replace \
-            "${POST_INSTALL_DIR}/dpu-node-ipam-controller.yaml" \
+            "${HOST_TRUSTED_POST_INSTALL_DIR}/dpu-node-ipam-controller.yaml" \
             "${GENERATED_POST_INSTALL_DIR}/dpu-node-ipam-controller.yaml" \
             "<HOSTED_CONTROL_PLANE_NAMESPACE>" "${HOSTED_CONTROL_PLANE_NAMESPACE}" \
             "<HOSTED_CLUSTER_NAME>" "${HOSTED_CLUSTER_NAME}"
@@ -501,9 +506,9 @@ function update_ipam_controller() {
 function update_dpu_service_nad() {
    local svc_file="dpu-service-nads.yaml"
 
-   if [ -f "${POST_INSTALL_DIR}/${svc_file}" ]; then
+   if [ -f "${HOST_TRUSTED_POST_INSTALL_DIR}/${svc_file}" ]; then
        update_file_multi_replace \
-         "${POST_INSTALL_DIR}/${svc_file}" \
+         "${HOST_TRUSTED_POST_INSTALL_DIR}/${svc_file}" \
          "${GENERATED_POST_INSTALL_DIR}/${svc_file}" \
          "<SVC_MTU>" "${NODES_MTU}"
    fi
@@ -512,9 +517,9 @@ function update_dpu_service_nad() {
 }
 
 function update_nodesriov_device_plugin_config() {
-    local src_dp_config="${POST_INSTALL_DIR}/nodesriovdevicepluginconfig.yaml"
+    local src_dp_config="${HOST_TRUSTED_POST_INSTALL_DIR}/nodesriovdevicepluginconfig.yaml"
     if [ ! -f "${src_dp_config}" ]; then
-        log [ERROR] "nodesriovdevicepluginconfig.yaml not found in ${POST_INSTALL_DIR}"
+        log [ERROR] "nodesriovdevicepluginconfig.yaml not found in ${HOST_TRUSTED_POST_INSTALL_DIR}"
         return 1
     fi
     local dst_dp_config="${GENERATED_POST_INSTALL_DIR}/nodesriovdevicepluginconfig.yaml"
@@ -565,15 +570,28 @@ function prepare_post_installation() {
         log [ERROR] "Post-installation directory not found: ${POST_INSTALL_DIR}"
         exit 1
     fi
+    if [ ! -d "${COMMON_POST_INSTALL_DIR}" ]; then
+        log [ERROR] "Common post-installation directory not found: ${COMMON_POST_INSTALL_DIR}"
+        return 1
+    fi
     if ! [[ "${NUM_VFS}" =~ ^[1-9][0-9]*$ ]]; then
         log [ERROR] "NUM_VFS must be a positive integer"
         return 1
     fi
 
     if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        if [ ! -d "${ZERO_TRUST_POST_INSTALL_DIR}" ]; then
+            log [ERROR] "Zero Trust post-installation directory not found: ${ZERO_TRUST_POST_INSTALL_DIR}"
+            return 1
+        fi
         prepare_zero_trust_provisioning_manifests
         log [INFO] "Post-installation manifest preparation completed successfully"
         return 0
+    fi
+
+    if [ ! -d "${HOST_TRUSTED_POST_INSTALL_DIR}" ]; then
+        log [ERROR] "Host-trusted post-installation directory not found: ${HOST_TRUSTED_POST_INSTALL_DIR}"
+        return 1
     fi
 
     # Update manifests with custom values
@@ -589,9 +607,9 @@ function prepare_post_installation() {
     fi
 
     # Process DPUDeployment template
-    if [ -f "${POST_INSTALL_DIR}/dpudeployment.yaml" ]; then
+    if [ -f "${HOST_TRUSTED_POST_INSTALL_DIR}/dpudeployment.yaml" ]; then
         update_file_multi_replace \
-            "${POST_INSTALL_DIR}/dpudeployment.yaml" \
+            "${HOST_TRUSTED_POST_INSTALL_DIR}/dpudeployment.yaml" \
             "${GENERATED_POST_INSTALL_DIR}/dpudeployment.yaml" \
             "<SRIOV_DP_CONFIG_CR_NAME>" "${SRIOV_DP_CONFIG_CR_NAME}"
     fi
@@ -600,7 +618,14 @@ function prepare_post_installation() {
     update_nodesriov_device_plugin_config
 
     # Copy remaining manifests using utility function (exclude special files)
-    copy_manifests_with_exclusions "${POST_INSTALL_DIR}" "${GENERATED_POST_INSTALL_DIR}" "${SPECIAL_FILES[@]}"
+    copy_manifests_with_exclusions \
+        "${COMMON_POST_INSTALL_DIR}" \
+        "${GENERATED_POST_INSTALL_DIR}" \
+        "bfb.yaml"
+    copy_manifests_with_exclusions \
+        "${HOST_TRUSTED_POST_INSTALL_DIR}" \
+        "${GENERATED_POST_INSTALL_DIR}" \
+        "${HOST_TRUSTED_SPECIAL_FILES[@]}"
 
     log [INFO] "Post-installation manifest preparation completed successfully"
 }
@@ -694,6 +719,7 @@ function apply_post_installation() {
     if [ -f "${GENERATED_POST_INSTALL_DIR}/dpudeployment.yaml" ]; then
         log [INFO] "Applying dpudeployment.yaml (last manifest)..."
         apply_manifest "${GENERATED_POST_INSTALL_DIR}/dpudeployment.yaml" "true"
+        wait_for_dpfhcp_provisioner_ready
     else
         log [WARN] "dpudeployment.yaml not found in ${GENERATED_POST_INSTALL_DIR}"
     fi

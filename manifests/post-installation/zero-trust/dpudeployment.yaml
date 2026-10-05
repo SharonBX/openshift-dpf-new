@@ -23,21 +23,24 @@ spec:
       serviceConfiguration: hbn
   serviceChains:
     switches:
-      - ports:
+      - serviceMTU: 9000
+        ports:
           - serviceInterface:
               matchLabels:
                 uplink: p0
           - service:
               name: hbn
               interface: p0_if
-      - ports:
+      - serviceMTU: 9000
+        ports:
           - serviceInterface:
               matchLabels:
                 uplink: p1
           - service:
               name: hbn
               interface: p1_if
-      - ports:
+      - serviceMTU: 9000
+        ports:
           - serviceInterface:
               matchLabels:
                 interface: pf0hpf

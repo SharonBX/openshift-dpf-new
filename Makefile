@@ -62,7 +62,7 @@ all-zt:
 # Zero Trust installation through DPU services and authorization.
 # Host worker/BMO provisioning, OVN injection, Kata, and trusted verification
 # are deliberately excluded.
-ZT_ALL_STEPS := validate-zt-mode verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig poweron-workers deploy-dpf prepare-dpu-files deploy-dpu-services deploy-hypershift deploy-zt-dpu-services
+ZT_ALL_STEPS := validate-zt-mode verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig poweron-workers deploy-dpf prepare-dpu-files deploy-dpu-services deploy-zt-dpu-services
 
 .NOTPARALLEL: _all-zt
 .PHONY: _all-zt
@@ -323,16 +323,7 @@ kubeadmin-password:
 
 .PHONY: poweron-workers
 poweron-workers:
-	@echo "Powering on physical workers via ipmitool (control-plane is up, VIPs are safe)..."
-	@$(WORKER_SCRIPT) poweron-all-workers
-	@if [ "$${WORKER_COUNT:-0}" -gt 0 ]; then \
-		if [ "$(DPF_DEPLOYMENT_MODE)" = "zero-trust" ]; then \
-			$(WORKER_SCRIPT) wait-for-dpu-redfish; \
-		else \
-			echo "Waiting $(or $(WORKER_POWER_ON_DELAY),180)s for worker hosts/DPUs to settle before provisioning..."; \
-			sleep "$(or $(WORKER_POWER_ON_DELAY),180)"; \
-		fi; \
-	fi
+	@$(WORKER_SCRIPT) poweron-workers
 
 .PHONY: deploy-nfd
 deploy-nfd:

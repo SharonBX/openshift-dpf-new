@@ -29,6 +29,7 @@ spec:
     enableDynamicBFCFGTemplates: true
     hostAgentDNSPolicy: Default
     dmsTimeout: 900
+    nodeEffectRemovalTimeout: "3600s"
     installInterface:
       installViaRedfish:
         bfbRegistryAddress: "<BFB_REGISTRY_HOST>:<ZT_BFB_REGISTRY_PORT>"

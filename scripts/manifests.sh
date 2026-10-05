@@ -200,10 +200,6 @@ resolve_zero_trust_bfb_registry_host() {
     local -n resolved_host=$1
 
     if [ "${VM_COUNT}" -gt 1 ]; then
-        if [ -z "${HYPERSHIFT_API_IP:-}" ]; then
-            log "ERROR" "HYPERSHIFT_API_IP must be set for multi-node Zero Trust deployment"
-            return 1
-        fi
         resolved_host="${HYPERSHIFT_API_IP}"
         return 0
     fi
@@ -220,30 +216,33 @@ resolve_zero_trust_bfb_registry_host() {
     log "INFO" "Zero Trust SNO: using ${resolved_host} for the BFB registry"
 }
 
-validate_zero_trust_dpf_variables() {
-    local missing=0
-    local variable
+prepare_zero_trust_objects() {
+    local flannel_config="$1"
+    local bfb_registry_host
 
-    for variable in \
-        ZT_DPU_BMC_IP_RANGE_START \
-        ZT_DPU_BMC_IP_RANGE_END \
-        ZT_BMC_ROOT_PASSWORD \
-        ZT_BFB_REGISTRY_PORT \
-        ZT_DPU_DISCOVERY_NAME; do
-        if [ -z "${!variable:-}" ]; then
-            log "ERROR" "${variable} must be set for Zero Trust deployment"
-            missing=1
-        fi
-    done
+    validate_zero_trust_mode || return 1
+    resolve_zero_trust_bfb_registry_host bfb_registry_host || return 1
 
-    if [ "${VM_COUNT}" -gt 1 ] && [ -z "${HYPERSHIFT_API_IP:-}" ]; then
-        log "ERROR" "HYPERSHIFT_API_IP must be set for multi-node Zero Trust deployment"
-        missing=1
-    fi
+    update_file_multi_replace \
+        "$MANIFESTS_DIR/dpf-installation/zero-trust/dpfoperatorconfig.yaml" \
+        "$GENERATED_DIR/dpfoperatorconfig.yaml" \
+        "<HOST_CLUSTER_API>" "$HOST_CLUSTER_API" \
+        "<FLANNEL_CONFIG>" "$flannel_config" \
+        "<NODES_MTU>" "$NODES_MTU" \
+        "<BFB_REGISTRY_HOST>" "$bfb_registry_host" \
+        "<ZT_BFB_REGISTRY_PORT>" "$ZT_BFB_REGISTRY_PORT"
 
-    validate_zero_trust_dpu_serials || missing=1
+    update_file_multi_replace \
+        "$MANIFESTS_DIR/dpf-installation/zero-trust/bmc-shared-password.yaml" \
+        "$GENERATED_DIR/bmc-shared-password.yaml" \
+        "<ZT_BMC_ROOT_PASSWORD_SECRET>" "$(printf '%s' "$ZT_BMC_ROOT_PASSWORD" | base64 -w 0)"
 
-    [ "${missing}" -eq 0 ]
+    update_file_multi_replace \
+        "$MANIFESTS_DIR/dpf-installation/dpudiscovery-zero-trust.yaml" \
+        "$GENERATED_DIR/dpudiscovery.yaml" \
+        "<ZT_DPU_DISCOVERY_NAME>" "$ZT_DPU_DISCOVERY_NAME" \
+        "<ZT_DPU_BMC_IP_RANGE_START>" "$ZT_DPU_BMC_IP_RANGE_START" \
+        "<ZT_DPU_BMC_IP_RANGE_END>" "$ZT_DPU_BMC_IP_RANGE_END"
 }
 
 prepare_dpf_manifests() {
@@ -284,8 +283,6 @@ prepare_dpf_manifests() {
     local excluded_files=(
         "*-values.yaml"
         "dpfoperatorconfig.yaml"
-        "dpfoperatorconfig-zero-trust.yaml"
-        "bmc-shared-password-zero-trust.yaml"
         "dpudiscovery-zero-trust.yaml"
     )
     
@@ -343,30 +340,7 @@ prepare_dpf_manifests() {
     fi
 
     if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
-        validate_zero_trust_dpf_variables || return 1
-        local bfb_registry_host
-        resolve_zero_trust_bfb_registry_host bfb_registry_host || return 1
-
-        update_file_multi_replace \
-            "$MANIFESTS_DIR/dpf-installation/dpfoperatorconfig-zero-trust.yaml" \
-            "$GENERATED_DIR/dpfoperatorconfig.yaml" \
-            "<HOST_CLUSTER_API>" "$HOST_CLUSTER_API" \
-            "<FLANNEL_CONFIG>" "$flannel_config" \
-            "<NODES_MTU>" "$NODES_MTU" \
-            "<BFB_REGISTRY_HOST>" "$bfb_registry_host" \
-            "<ZT_BFB_REGISTRY_PORT>" "$ZT_BFB_REGISTRY_PORT"
-
-        update_file_multi_replace \
-            "$MANIFESTS_DIR/dpf-installation/bmc-shared-password-zero-trust.yaml" \
-            "$GENERATED_DIR/bmc-shared-password.yaml" \
-            "<ZT_BMC_ROOT_PASSWORD_SECRET>" "$(printf '%s' "$ZT_BMC_ROOT_PASSWORD" | base64 -w 0)"
-
-        update_file_multi_replace \
-            "$MANIFESTS_DIR/dpf-installation/dpudiscovery-zero-trust.yaml" \
-            "$GENERATED_DIR/dpudiscovery.yaml" \
-            "<ZT_DPU_DISCOVERY_NAME>" "$ZT_DPU_DISCOVERY_NAME" \
-            "<ZT_DPU_BMC_IP_RANGE_START>" "$ZT_DPU_BMC_IP_RANGE_START" \
-            "<ZT_DPU_BMC_IP_RANGE_END>" "$ZT_DPU_BMC_IP_RANGE_END"
+        prepare_zero_trust_objects "${flannel_config}" || return 1
     else
         update_file_multi_replace \
             "$MANIFESTS_DIR/dpf-installation/dpfoperatorconfig.yaml" \
