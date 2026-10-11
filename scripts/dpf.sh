@@ -517,35 +517,49 @@ function wait_for_dpf_provisioning_api() {
         'oc get endpoints dpf-provisioning-webhook-service -n dpf-operator-system -o jsonpath="{.subsets[*].addresses[*].ip}" | grep -q .'
 }
 
-function configure_zero_trust_dpu_inventory() {
+function apply_zero_trust_dpu_discovery() {
+    local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
+    local discovery_manifest="${inventory_dir}/dpudiscovery.yaml"
+
+    if [ ! -f "${discovery_manifest}" ]; then
+        log [ERROR] "Zero Trust DPUDiscovery manifest not found: ${discovery_manifest}"
+        return 1
+    fi
+
+    log [INFO] "Applying Zero Trust DPUDiscovery through Redfish/OOB"
+    apply_manifest "${discovery_manifest}" true
+}
+
+function apply_static_zero_trust_dpu_inventory() {
     local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
     local serial_variable serial device_manifest node_manifest
 
-    if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ]; then
-        local discovery_manifest="${inventory_dir}/dpudiscovery.yaml"
-        if [ ! -f "${discovery_manifest}" ]; then
-            log [ERROR] "Zero Trust DPUDiscovery manifest not found: ${discovery_manifest}"
+    log [INFO] "Applying static Zero Trust DPUDevice and DPUNode resources"
+    while IFS= read -r serial_variable; do
+        serial="${!serial_variable:-}"
+        [ -n "${serial}" ] || continue
+
+        device_manifest="${inventory_dir}/dpudevice-${serial}.yaml"
+        node_manifest="${inventory_dir}/dpunode-${serial}.yaml"
+        if [ ! -f "${device_manifest}" ] || [ ! -f "${node_manifest}" ]; then
+            log [ERROR] "Static Zero Trust inventory manifests not found for ${serial}"
             return 1
         fi
+        apply_manifest "${device_manifest}" true || return 1
+        apply_manifest "${node_manifest}" true || return 1
+    done < <(list_dpu_serial_variables)
+}
 
-        log [INFO] "Applying Zero Trust DPUDiscovery through Redfish/OOB"
-        apply_manifest "${discovery_manifest}" true
+function apply_zero_trust_dpu_inventory_resources() {
+    if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ]; then
+        apply_zero_trust_dpu_discovery
     else
-        log [INFO] "Applying static Zero Trust DPUDevice and DPUNode resources"
-        while IFS= read -r serial_variable; do
-            serial="${!serial_variable:-}"
-            [ -n "${serial}" ] || continue
-
-            device_manifest="${inventory_dir}/dpudevice-${serial}.yaml"
-            node_manifest="${inventory_dir}/dpunode-${serial}.yaml"
-            if [ ! -f "${device_manifest}" ] || [ ! -f "${node_manifest}" ]; then
-                log [ERROR] "Static Zero Trust inventory manifests not found for ${serial}"
-                return 1
-            fi
-            apply_manifest "${device_manifest}" true
-            apply_manifest "${node_manifest}" true
-        done < <(list_dpu_serial_variables)
+        apply_static_zero_trust_dpu_inventory
     fi
+}
+
+function wait_for_zero_trust_dpu_inventory_resources() {
+    local serial_variable serial
 
     while IFS= read -r serial_variable; do
         serial="${!serial_variable:-}"
@@ -568,17 +582,106 @@ function configure_zero_trust_dpu_inventory() {
                 -n dpf-operator-system || true
             return 1
         fi
-
-        # Set the discovered DPUNode label to the empty value selected by DPUDeployment.
-        log [INFO] "Normalizing the discovered DPUNode label for dpu-node-${serial}..."
-        if ! oc label -n dpf-operator-system \
-            "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
-            feature.node.kubernetes.io/dpu-enabled= \
-            --overwrite; then
-            log [ERROR] "Failed to normalize the DPUNode label for dpu-node-${serial}"
-            return 1
-        fi
     done < <(list_dpu_serial_variables)
+}
+
+function apply_zero_trust_dpunode_reboot_resources() {
+    local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
+    local reboot_script_manifest="${inventory_dir}/dpunode-reboot-script.yaml"
+    local serial_variable serial worker_index
+    local bmc_ip_variable bmc_user_variable bmc_password_variable
+    local bmc_ip bmc_user bmc_password
+    local host_bmc_address_map=""
+    local host_bmc_credentials=""
+
+    while IFS= read -r serial_variable; do
+        serial="${!serial_variable:-}"
+        [ -n "${serial}" ] || continue
+
+        worker_index="${serial_variable#DPU}"
+        worker_index="${worker_index%_SERIAL}"
+        bmc_ip_variable="WORKER_${worker_index}_BMC_IP"
+        bmc_user_variable="WORKER_${worker_index}_BMC_USER"
+        bmc_password_variable="WORKER_${worker_index}_BMC_PASSWORD"
+        bmc_ip="${!bmc_ip_variable}"
+        bmc_user="${!bmc_user_variable}"
+        bmc_password="${!bmc_password_variable}"
+
+        host_bmc_address_map+="    dpu-node-${serial}=${bmc_ip}"$'\n'
+        host_bmc_credentials+="  dpu-node-${serial}.username: $(printf '%s' "${bmc_user}" | base64 -w 0)"$'\n'
+        host_bmc_credentials+="  dpu-node-${serial}.password: $(printf '%s' "${bmc_password}" | base64 -w 0)"$'\n'
+    done < <(list_dpu_serial_variables)
+
+    update_file_multi_replace \
+        "${MANIFESTS_DIR}/dpf-installation/zero-trust/dpunode-reboot-script.yaml" \
+        "${reboot_script_manifest}" \
+        "<DPU_HOST_BMC_ADDRESS_MAP>" "${host_bmc_address_map%$'\n'}" \
+        "<HOST_BMC_CREDENTIALS_SECRET>" "${host_bmc_credentials%$'\n'}" \
+        "<ZT_DPU_REBOOT_IMAGE>" "${ZT_DPU_REBOOT_IMAGE}" || return 1
+    log [INFO] "Applying the Zero Trust DPUNode IPMI reboot script"
+    apply_manifest "${reboot_script_manifest}" true
+}
+
+function configure_zero_trust_dpunode_reboot() {
+    local serial="$1"
+    local current_reboot_script
+
+    current_reboot_script=$(oc get -n dpf-operator-system \
+        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
+        -o jsonpath='{.spec.nodeRebootMethod.script.name}' 2>/dev/null || true)
+    if [ "${current_reboot_script}" = "custom-reboot-script" ]; then
+        log [INFO] "Scripted reboot is already configured for dpu-node-${serial}"
+        return 0
+    fi
+
+    log [INFO] "Configuring scripted reboot for dpu-node-${serial}..."
+    if ! oc patch -n dpf-operator-system \
+        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
+        --type=json \
+        -p '[{"op":"add","path":"/spec/nodeRebootMethod","value":{"script":{"name":"custom-reboot-script"}}}]'; then
+        log [ERROR] "Failed to configure scripted reboot for dpu-node-${serial}"
+        return 1
+    fi
+}
+
+function normalize_zero_trust_dpunode_label() {
+    local serial="$1"
+
+    if oc get -n dpf-operator-system \
+        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" -o json | \
+        jq -e '.metadata.labels["feature.node.kubernetes.io/dpu-enabled"] == ""' \
+            >/dev/null; then
+        log [INFO] "DPUNode label is already normalized for dpu-node-${serial}"
+        return 0
+    fi
+
+    log [INFO] "Normalizing the discovered DPUNode label for dpu-node-${serial}..."
+    if ! oc label -n dpf-operator-system \
+        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
+        feature.node.kubernetes.io/dpu-enabled= \
+        --overwrite; then
+        log [ERROR] "Failed to normalize the DPUNode label for dpu-node-${serial}"
+        return 1
+    fi
+}
+
+function configure_zero_trust_dpunodes() {
+    local serial_variable serial
+
+    while IFS= read -r serial_variable; do
+        serial="${!serial_variable:-}"
+        [ -n "${serial}" ] || continue
+
+        configure_zero_trust_dpunode_reboot "${serial}" || return 1
+        normalize_zero_trust_dpunode_label "${serial}" || return 1
+    done < <(list_dpu_serial_variables)
+}
+
+function configure_zero_trust_dpu_inventory() {
+    apply_zero_trust_dpu_inventory_resources || return 1
+    wait_for_zero_trust_dpu_inventory_resources || return 1
+    apply_zero_trust_dpunode_reboot_resources || return 1
+    configure_zero_trust_dpunodes || return 1
 
     log [INFO] "Zero Trust DPU inventory configuration completed"
     oc get dpudevices.provisioning.dpu.nvidia.com -n dpf-operator-system
