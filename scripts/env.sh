@@ -288,7 +288,7 @@ validate_zero_trust_dpu_serials() {
     [ "${invalid}" -eq 0 ]
 }
 
-validate_zero_trust_static_inventory() {
+validate_zero_trust_dpu_bmc_addresses() {
     local invalid=0
     local serial_variable serial bmc_ip_variable bmc_ip
     local -A seen_bmc_ips=()
@@ -326,6 +326,45 @@ validate_zero_trust_static_inventory() {
     done < <(list_dpu_bmc_ip_variables)
 
     [ "${invalid}" -eq 0 ]
+}
+
+validate_zero_trust_host_bmc_credentials() {
+    local serial_variable serial worker_index dpu_variable
+    local bmc_ip_variable
+
+    while IFS= read -r serial_variable; do
+        serial="${!serial_variable:-}"
+        [ -n "${serial}" ] || continue
+
+        worker_index="${serial_variable#DPU}"
+        worker_index="${worker_index%_SERIAL}"
+        if [ "${worker_index}" -gt "${WORKER_COUNT}" ]; then
+            echo "ERROR: ${serial_variable} requires WORKER_${worker_index}, but WORKER_COUNT=${WORKER_COUNT}" >&2
+            return 1
+        fi
+
+        dpu_variable="WORKER_${worker_index}_DPU"
+        if [ "${!dpu_variable:-$(default_worker_is_dpu)}" != "true" ]; then
+            echo "ERROR: ${serial_variable} requires ${dpu_variable}=true for host reboot mapping" >&2
+            return 1
+        fi
+
+        for bmc_ip_variable in \
+            "WORKER_${worker_index}_BMC_IP" \
+            "WORKER_${worker_index}_BMC_USER" \
+            "WORKER_${worker_index}_BMC_PASSWORD"; do
+            if [ -z "${!bmc_ip_variable:-}" ]; then
+                echo "ERROR: ${serial_variable} requires ${bmc_ip_variable} for host reboot handling" >&2
+                return 1
+            fi
+        done
+
+        bmc_ip_variable="WORKER_${worker_index}_BMC_IP"
+        if ! _ipv4_to_integer "${!bmc_ip_variable}" >/dev/null; then
+            echo "ERROR: ${bmc_ip_variable} must be a valid IPv4 address" >&2
+            return 1
+        fi
+    done < <(list_dpu_serial_variables)
 }
 
 _ipv4_to_integer() {
@@ -370,9 +409,10 @@ validate_zero_trust_redfish_configuration() {
 
     validate_worker_power_on_delay || return 1
     validate_zero_trust_dpu_serials || return 1
+    validate_zero_trust_host_bmc_credentials || return 1
 
     if [ "${ZT_DPU_DISCOVERY_MODE}" = "static" ]; then
-        validate_zero_trust_static_inventory || return 1
+        validate_zero_trust_dpu_bmc_addresses || return 1
         return 0
     fi
 
@@ -410,7 +450,8 @@ validate_zero_trust_mode() {
 
     for variable in \
         BFB_URL \
-        ZT_BFB_REGISTRY_PORT; do
+        ZT_BFB_REGISTRY_PORT \
+        ZT_DPU_REBOOT_IMAGE; do
         if [ -z "${!variable:-}" ]; then
             echo "ERROR: Zero Trust installation requires ${variable}" >&2
             return 1
