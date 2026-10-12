@@ -185,31 +185,32 @@ function update_nodesriov_device_plugin_config() {
     fi
     local dst_dp_config="${GENERATED_POST_INSTALL_DIR}/nodesriovdevicepluginconfig.yaml"
     local vf_range_end=$((NUM_VFS - 1))
-    local pf1_regular_end="${vf_range_end}"
+    # PF0 VF0 is in no pool and VF1 is the management pool; regular PF0 VFs start at 2.
+    local pf0_regular_start=2
     local kata_sriov_pool=""
     if [ "${KATA_ENABLED}" = "true" ]; then
         if ! [[ "${KATA_NUM_VFS}" =~ ^[1-9][0-9]*$ ]]; then
             log [ERROR] "KATA_NUM_VFS must be a positive integer when KATA_ENABLED=true"
             return 1
         fi
-        if [ "${KATA_NUM_VFS}" -ge "${NUM_VFS}" ]; then
-            log [ERROR] "KATA_NUM_VFS (${KATA_NUM_VFS}) must be less than NUM_VFS (${NUM_VFS})"
+        if [ $((pf0_regular_start + KATA_NUM_VFS)) -ge "${NUM_VFS}" ]; then
+            log [ERROR] "KATA_NUM_VFS (${KATA_NUM_VFS}) must be less than NUM_VFS - ${pf0_regular_start} ($((NUM_VFS - pf0_regular_start)))"
             return 1
         fi
-        local pf1_regular_count=$((NUM_VFS - KATA_NUM_VFS))
-        pf1_regular_end=$((pf1_regular_count - 1))
-        local kata_vf_start=${pf1_regular_count}
-        local kata_vf_end=$((NUM_VFS - 1))
-        log [INFO] "KATA_ENABLED=true: PF1 regular VFs 0-${pf1_regular_end}, kata pool ${KATA_SRIOV_DP_CONFIG_NAME} VFs ${kata_vf_start}-${kata_vf_end}"
+        # Low PF0 indices: Argus introspects PF0 VFs only and scans them in index order.
+        local kata_vf_start=${pf0_regular_start}
+        local kata_vf_end=$((pf0_regular_start + KATA_NUM_VFS - 1))
+        pf0_regular_start=$((kata_vf_end + 1))
+        log [INFO] "KATA_ENABLED=true: kata pool ${KATA_SRIOV_DP_CONFIG_NAME} PF0 VFs ${kata_vf_start}-${kata_vf_end}, PF0 regular VFs ${pf0_regular_start}-${vf_range_end}"
         # Template already has the list-item indent before <KATA_SRIOV_POOL>.
         kata_sriov_pool="- name: ${KATA_SRIOV_DP_CONFIG_NAME}
       type: vf
       ranges:
-        - pfIndex: ${KATA_SRIOV_PF_INDEX}
+        - pfIndex: 0
           start: ${kata_vf_start}
           end: ${kata_vf_end}"
     else
-        log [INFO] "KATA_ENABLED=${KATA_ENABLED:-false}: skipping kata VF pool (PF1 uses full 0-${vf_range_end})"
+        log [INFO] "KATA_ENABLED=${KATA_ENABLED:-false}: skipping kata VF pool (PF0 and PF1 use their full regular ranges)"
     fi
     update_file_multi_replace \
         "${src_dp_config}" \
@@ -217,8 +218,8 @@ function update_nodesriov_device_plugin_config() {
         "<SRIOV_DP_CONFIG_NAME>" "${SRIOV_DP_CONFIG_NAME}" \
         "<SRIOV_DP_CONFIG_CR_NAME>" "${SRIOV_DP_CONFIG_CR_NAME}" \
         "<SRIOV_DP_MGMT_POOL_NAME>" "${SRIOV_DP_MGMT_POOL_NAME}" \
+        "<PF0_REGULAR_VF_START>" "${pf0_regular_start}" \
         "<NUM_VFS_END>" "${vf_range_end}" \
-        "<PF1_REGULAR_VF_END>" "${pf1_regular_end}" \
         "<KATA_SRIOV_POOL>" "${kata_sriov_pool}"
 }
 
