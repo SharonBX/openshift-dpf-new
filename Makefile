@@ -36,7 +36,7 @@ all:
 	@mkdir -p logs
 	@bash -o pipefail -c '$(MAKE) _all 2>&1 | tee "logs/make_all_$(shell date +%Y%m%d_%H%M%S).log"'
 
-ALL_STEPS := verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig poweron-workers add-worker-nodes deploy-dpf prepare-dpu-files deploy-dpu-services enable-ovn-injector deploy-observability
+ALL_STEPS := verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig add-worker-nodes deploy-dpf prepare-dpu-files deploy-dpu-services enable-ovn-injector deploy-observability
 ifeq ($(KATA_ENABLED),true)
 ALL_STEPS += enable-kata
 endif
@@ -274,14 +274,13 @@ update-etc-hosts:
 
 .PHONY: clean-all
 clean-all:
-	@echo "Step 1/4: Powering off physical workers via ipmitool (release ingress/API VIPs)..."
-	-@$(WORKER_SCRIPT) shutoff-all-workers
+	@$(WORKER_SCRIPT) shutoff-all-workers
 	@echo "Step 2/4: Destroying worker VMs (release ingress/API VIPs)..."
-	-@$(VM_SCRIPT) delete-worker-vms
+	@$(VM_SCRIPT) delete-worker-vms
 	@echo "Step 3/4: Deleting Assisted Installer cluster and generated files..."
-	-@$(CLUSTER_SCRIPT) clean-all
+	@$(CLUSTER_SCRIPT) clean-all
 	@echo "Step 4/4: Destroying remaining VMs (control-plane; worker VMs already removed in step 2)..."
-	-@$(VM_SCRIPT) delete
+	@$(VM_SCRIPT) delete
 
 .PHONY: kubeconfig
 kubeconfig:
@@ -509,6 +508,7 @@ help:
 	@echo "  delete-cluster    - Delete the cluster"
 	@echo "  clean            - Remove generated files"
 	@echo "  clean-all        - Power off physical workers (ipmitool), delete cluster, VMs, and clean all generated files"
+	@echo "                     Set POWER_OFF_WORKERS=false to leave physical workers powered on"
 	@echo ""
 	@echo "VM Management:"
 	@echo "  create-vms        - Create virtual machines for the cluster"
@@ -650,6 +650,7 @@ help:
 	@echo ""
 	@echo "Worker Node Configuration:"
 	@echo "  WORKER_COUNT          - Number of workers to provision (default: 0)"
+	@echo "  POWER_OFF_WORKERS     - Power off physical workers during clean-all (default: true)"
 	@echo "  WORKER_n_NAME         - Worker hostname (e.g., WORKER_1_NAME=openshift-worker-1)"
 	@echo "  WORKER_n_BMC_IP       - BMC/iDRAC IP address for Redfish API"
 	@echo "  WORKER_n_BMC_USER     - BMC username"

@@ -34,7 +34,7 @@ _run_ipmitool() {
     # Use a subshell to ensure we capture output and status correctly
     local status=0
     local output
-    output=$(ipmitool -I lanplus -H "${bmc_ip}" -U "${user}" -f "${pw_file}" "$@" 2>/dev/null) || status=$?
+    output=$(ipmitool -I lanplus -H "${bmc_ip}" -U "${user}" -f "${pw_file}" "$@") || status=$?
     
     rm -f "${pw_file}"
     
@@ -196,6 +196,12 @@ _shutoff_worker() {
 }
 
 shutoff_all_workers() {
+    # Existing .env files may predate the flag; keep power-off enabled by default.
+    if [[ "${POWER_OFF_WORKERS:-true}" == "false" ]]; then
+        log "INFO" "POWER_OFF_WORKERS=false, skipping physical worker shutoff"
+        return 0
+    fi
+
     local count="${WORKER_COUNT:-0}"
     if [[ "${count}" -eq 0 ]]; then
         log "INFO" "WORKER_COUNT=0, skipping physical worker shutoff"
