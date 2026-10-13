@@ -483,7 +483,6 @@ function deploy_argocd() {
             "${MANIFESTS_DIR}/gitops-operator/subscription.yaml" \
             "$GENERATED_DIR/gitops-operator-subscription.yaml" \
             "<GITOPS_OPERATOR_CHANNEL>" "$GITOPS_OPERATOR_CHANNEL" \
-            "<GITOPS_OPERATOR_VERSION>" "$GITOPS_OPERATOR_VERSION"
         apply_manifest "$GENERATED_DIR/gitops-operator-subscription.yaml"
 
         # Prefer CSV readiness over pod label matching for stability
