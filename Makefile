@@ -36,7 +36,7 @@ all:
 	@mkdir -p logs
 	@bash -o pipefail -c '$(MAKE) _all 2>&1 | tee "logs/make_all_$(shell date +%Y%m%d_%H%M%S).log"'
 
-ALL_STEPS := verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig add-worker-nodes deploy-dpf prepare-dpu-files deploy-dpu-services enable-ovn-injector deploy-observability
+ALL_STEPS := validate-host-trusted-mode verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig add-worker-nodes deploy-dpf prepare-dpu-files deploy-dpu-services enable-ovn-injector deploy-observability
 ifeq ($(KATA_ENABLED),true)
 ALL_STEPS += enable-kata
 endif
@@ -53,6 +53,32 @@ _all: $(ALL_STEPS)
 
 .PHONY: create-base-cluster
 create-base-cluster: verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig poweron-workers add-worker-nodes verify-workers
+
+.PHONY: all-zt
+all-zt:
+	@mkdir -p logs
+	@bash -o pipefail -c '$(MAKE) _all-zt DPF_DEPLOYMENT_MODE=zero-trust NODES_MTU=9000 2>&1 | tee "logs/make_all_zt_$(shell date +%Y%m%d_%H%M%S).log"'
+
+# Zero Trust installation through DPU services and authorization.
+# Host worker/BMO provisioning, OVN injection, Kata, and trusted verification
+# are deliberately excluded.
+ZT_ALL_STEPS := validate-zt-mode verify-files check-cluster create-vms prepare-manifests cluster-install update-etc-hosts kubeconfig poweron-workers deploy-dpf prepare-dpu-files deploy-dpu-services deploy-zt-dpu-services
+
+.NOTPARALLEL: _all-zt
+.PHONY: _all-zt
+_all-zt: $(ZT_ALL_STEPS)
+	@echo ""
+	@echo "================================================================================"
+	@echo "Zero Trust DPF, hosted-cluster, and DPU service configuration complete"
+	@echo "================================================================================"
+
+.PHONY: validate-zt-mode
+validate-zt-mode:
+	@$(ENV_SCRIPT) validate-zt-mode
+
+.PHONY: validate-host-trusted-mode
+validate-host-trusted-mode:
+	@$(ENV_SCRIPT) validate-host-trusted-mode
 
 .PHONY: verify-files
 verify-files:
@@ -216,6 +242,14 @@ generate-overrides:
 deploy-dpu-services: prepare-dpu-files
 	@$(POST_INSTALL_SCRIPT) apply
 
+.PHONY: prepare-zt-dpu-services
+prepare-zt-dpu-services: validate-zt-mode
+	@$(POST_INSTALL_SCRIPT) prepare-zt-services
+
+.PHONY: deploy-zt-dpu-services
+deploy-zt-dpu-services: prepare-zt-dpu-services
+	@$(POST_INSTALL_SCRIPT) apply-zt-services
+
 .PHONY: deploy-observability
 deploy-observability:
 	@$(POST_INSTALL_SCRIPT) observability
@@ -296,12 +330,7 @@ kubeadmin-password:
 
 .PHONY: poweron-workers
 poweron-workers:
-	@echo "Powering on physical workers via ipmitool (control-plane is up, VIPs are safe)..."
-	@$(WORKER_SCRIPT) poweron-all-workers
-	@if [ "$${WORKER_COUNT:-0}" -gt 0 ]; then \
-		echo "Waiting $(or $(WORKER_POWER_ON_DELAY),180)s for worker hosts/DPUs to settle before BMO provisioning..."; \
-		sleep "$(or $(WORKER_POWER_ON_DELAY),180)"; \
-	fi
+	@$(WORKER_SCRIPT) poweron-workers
 
 .PHONY: deploy-nfd
 deploy-nfd:
@@ -503,6 +532,7 @@ help:
 	@echo "Cluster Management:"
 	@echo "  all               - Complete setup: verify, create cluster, VMs, install, and wait for completion (enable-kata last if KATA_ENABLED=true)"
 	@echo "  create-base-cluster - Create and install a base OpenShift cluster through worker provisioning"
+	@echo "  all-zt            - Zero Trust setup through DPU services and hosted-cluster authorization"
 	@echo "  create-cluster    - Create a new cluster"
 	@echo "  create-day2-cluster - Create a day2 cluster for worker nodes with DPUs"
 	@echo "  get-day2-iso      - Get ISO URL for worker nodes with DPUs (uses day2 cluster)"
@@ -550,9 +580,11 @@ help:
 	@echo "  upgrade-dpu       - Upgrade DPUs by creating a new BFB and patching DPUDeployment (optional: DPU_UPGRADE_BFB_URL)"
 	@echo "  upgrade-dpf       - Interactive DPF operator upgrade (user-friendly wrapper for prepare-dpf-manifests)"
 	@echo "  prepare-dpu-files - Prepare post-installation manifests with custom values"
+	@echo "  prepare-zt-dpu-services - Prepare Zero Trust DPU service and hosted-cluster RBAC manifests"
 	@echo "  generate-overrides - Write DPUServiceTemplate overrides ConfigMap (also via GENERATE_DPUSERVICETEMPLATE_OVERRIDES=true)"
 	@echo "  deploy-dpu-services - Deploy DPU services to the cluster"
 	@echo "  run-custom-postinstall-script - Run CUSTOM_POSTINSTALL_SCRIPT (file or http(s) URL, with args); also last make all step"
+	@echo "  deploy-zt-dpu-services - Apply and verify Zero Trust services and hosted-cluster RBAC"
 	@echo "  enable-kata       - OSC (inert KataConfig) + kata-coldplug on worker-dpu (also last make all step when KATA_ENABLED=true)"
 	@echo "  enable-argus      - Install the DOCA Argus DPU service (requires ARGUS_ENABLED=true)"
 	@echo "  deploy-kata-test  - Deploy kata-dpu-test Deployment (KATA_TEST_REPLICAS, default 1)"
@@ -635,6 +667,9 @@ help:
 	@echo "  VM_WORKER_DISK_SIZE2 - Secondary disk size in GB for worker VMs (default: same as DISK_SIZE2)"
 	@echo ""
 	@echo "DPF Configuration:"
+	@echo "  DPF_DEPLOYMENT_MODE - Deployment profile: 'host-trusted' (default) or 'zero-trust'"
+	@echo "                        Zero Trust: make generate-env DPF_DEPLOYMENT_MODE=zero-trust NODES_MTU=9000"
+	@echo "                        Zero Trust uses the HyperShift CLI, staticClusterManager, and Redfish"
 	@echo "  DPF_VERSION      - DPF operator version (default: $(DPF_VERSION))"
 	@echo "  KATA_ENABLED     - If true, make all runs enable-kata last (default: false)"
 	@echo "  ARGUS_ENABLED    - If true, deploy DOCA Argus with DPU services (default: false)"
@@ -643,7 +678,7 @@ help:
 	@echo ""
 	@echo "MetalLB Configuration:"
 	@echo "  HYPERSHIFT_API_IP     - IP address for Hypershift API server LoadBalancer"
-	@echo "                          If set: Deploys MetalLB and uses LoadBalancer for Hypershift API (dpf-hcp-provisioner-operator manages IPAddressPool/L2Advertisement)"
+	@echo "                          Zero Trust MNO also uses it for the BFB registry; Zero Trust SNO ignores it"
 	@echo "                          If not set: Uses NodePort for Hypershift API (multi-node) or default (single-node)"
 	@echo ""
 	@echo "Post-installation Configuration:"
