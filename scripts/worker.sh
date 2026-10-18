@@ -246,8 +246,8 @@ _poweron_worker() {
     _bmc_power_on "${bmc_ip}" "${bmc_user}" "${bmc_pass}"
 }
 
-# Power on all configured physical workers via ipmitool.
-poweron_all_workers() {
+poweron_workers() {
+    local wait_for_readiness="${1:-true}"
     local count="${WORKER_COUNT:-0}"
     if [[ "${count}" -eq 0 ]]; then
         log "INFO" "WORKER_COUNT=0, skipping physical worker power-on"
@@ -268,6 +268,20 @@ poweron_all_workers() {
     fi
 
     log "INFO" "All configured workers powered on"
+
+    if [ "${wait_for_readiness}" != "true" ]; then
+        return 0
+    fi
+
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
+        wait_for_zero_trust_dpu_redfish
+        return
+    fi
+
+    validate_worker_power_on_delay || return 1
+
+    log "INFO" "Waiting ${WORKER_POWER_ON_DELAY}s for worker hosts/DPUs to settle before provisioning..."
+    sleep "${WORKER_POWER_ON_DELAY}"
 }
 
 # NNO only: regular ovnkube-node builds br-ex from the boot NIC on first start,
@@ -425,24 +439,6 @@ wait_for_zero_trust_dpu_redfish() {
         log "INFO" "DPU Redfish readiness: ${reachable}/${expected}; retrying in ${interval}s..."
         sleep "${interval}"
     done
-}
-
-poweron_workers() {
-    poweron_all_workers || return 1
-
-    if [ "${WORKER_COUNT:-0}" -eq 0 ]; then
-        return 0
-    fi
-
-    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
-        wait_for_zero_trust_dpu_redfish
-        return
-    fi
-
-    validate_worker_power_on_delay || return 1
-
-    log "INFO" "Waiting ${WORKER_POWER_ON_DELAY}s for worker hosts/DPUs to settle before provisioning..."
-    sleep "${WORKER_POWER_ON_DELAY}"
 }
 
 provision_all_workers() {
@@ -743,7 +739,7 @@ case "${1:-}" in
     delete-worker) delete_worker "${2:-}" ;;
     shutoff-all-workers) shutoff_all_workers ;;
     poweron-workers) poweron_workers ;;
-    poweron-all-workers) poweron_all_workers ;;
+    poweron-all-workers) poweron_workers false ;;
     wait-for-dpu-redfish) wait_for_zero_trust_dpu_redfish ;;
     *)
         echo "Usage: $0 {provision-all-workers|approve-worker-csrs|display-worker-status|display-manual-csr-instructions|apply-short-worker-hostnames|deploy-csr-auto-approver|delete-csr-auto-approver|delete-worker <bmh-name|machine-name|node-name>|shutoff-all-workers|poweron-workers|poweron-all-workers|wait-for-dpu-redfish}"
