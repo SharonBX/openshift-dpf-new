@@ -116,6 +116,28 @@ HBN per-DPU configuration, and creates missing DPU inventory objects. Existing
 IPAM, NAD, interface, and service-chain resources automatically reconcile for
 the new DPUs.
 
+### Scaling In a Zero Trust DPU
+
+Scale-in is supported only with `ZT_DPU_DISCOVERY_MODE=static`. Scanning mode
+uses one inclusive IP range and would rediscover a removed DPU whose address
+remains within that range.
+
+Clear the removed DPU's numbered `DPU<N>_SERIAL` and matching
+`DPU<N>_BMC_IP` from the inputs used to generate `.env`. At least `DPU1_SERIAL`
+must remain configured. Regenerate `.env`, then pass the removed serial
+explicitly:
+
+```bash
+source user.env
+make generate-env FORCE=true
+make scale-in-zt-dpu DPU_SERIAL=mt2536600emj
+```
+
+The target removes the DPUNode from the DPUDeployment selector, waits for the
+managed DPU to be deleted, removes its DPUNode and DPUDevice inventory objects,
+and refreshes the HBN configuration for the remaining DPUs. It does not power
+off the physical worker.
+
 ### Zero Trust Single-Node OpenShift
 
 Set `VM_COUNT=1` to use an SNO management cluster. `API_VIP` and `INGRESS_VIP`

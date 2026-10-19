@@ -721,6 +721,108 @@ function scale_out_zero_trust_dpus() {
     configure_zero_trust_dpu_inventory false
 }
 
+function zero_trust_serial_is_configured() {
+    local target_serial="$1"
+    local serial_variable
+
+    while IFS= read -r serial_variable; do
+        if [ "${!serial_variable:-}" = "${target_serial}" ]; then
+            return 0
+        fi
+    done < <(list_dpu_serial_variables)
+
+    return 1
+}
+
+function zero_trust_dpu_for_node_absent() {
+    local node_name="$1"
+    local dpu_names
+
+    dpu_names=$(oc get dpus.provisioning.dpu.nvidia.com \
+        -n dpf-operator-system \
+        -o custom-columns='NAME:.metadata.name,NODE:.spec.dpuNodeName' \
+        --no-headers 2>/dev/null | \
+        awk -v node="${node_name}" '$2 == node {print $1}') || return 1
+
+    [ -z "${dpu_names}" ]
+}
+
+function wait_for_zero_trust_dpu_removal() {
+    local node_name="$1"
+
+    log [INFO] "Waiting for the DPU associated with ${node_name} to be removed..."
+    if retry 60 10 zero_trust_dpu_for_node_absent "${node_name}"; then
+        return 0
+    fi
+
+    log [ERROR] "The DPU associated with ${node_name} was not removed within 10 minutes"
+    oc get dpus.provisioning.dpu.nvidia.com -n dpf-operator-system \
+        -o custom-columns='NAME:.metadata.name,NODE:.spec.dpuNodeName,PHASE:.status.phase' || true
+    return 1
+}
+
+function scale_in_zero_trust_dpu() {
+    local serial="${1:-}"
+
+    if [ "${DPF_DEPLOYMENT_MODE}" != "zero-trust" ]; then
+        log [ERROR] "DPU scale-in requires DPF_DEPLOYMENT_MODE=zero-trust"
+        return 1
+    fi
+    if [ "${ZT_DPU_DISCOVERY_MODE}" != "static" ]; then
+        log [ERROR] "DPU scale-in supports only ZT_DPU_DISCOVERY_MODE=static"
+        log [ERROR] "Scanning mode uses one inclusive IP range and would rediscover the removed DPU"
+        return 1
+    fi
+    if [ -z "${serial}" ]; then
+        log [ERROR] "DPU scale-in requires DPU_SERIAL, for example: make scale-in-zt-dpu DPU_SERIAL=mt2536600emj"
+        return 1
+    fi
+    if [[ ! "${serial}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+        log [ERROR] "DPU_SERIAL must be a lowercase Kubernetes resource name: ${serial}"
+        return 1
+    fi
+    if zero_trust_serial_is_configured "${serial}"; then
+        log [ERROR] "DPU ${serial} is still present in the configured DPU<N>_SERIAL inventory"
+        log [ERROR] "Remove it from the desired inventory, regenerate .env, and rerun scale-in"
+        return 1
+    fi
+
+    get_kubeconfig
+    wait_for_dpf_provisioning_api
+
+    local node_name
+    node_name=$(oc get dpudevices.provisioning.dpu.nvidia.com "${serial}" \
+        -n dpf-operator-system \
+        -o 'jsonpath={.metadata.labels.provisioning\.dpu\.nvidia\.com/dpunode-name}' \
+        2>/dev/null || true)
+    node_name="${node_name:-dpu-node-${serial}}"
+
+    if oc get dpunodes.provisioning.dpu.nvidia.com "${node_name}" \
+        -n dpf-operator-system &>/dev/null; then
+        log [INFO] "Removing ${node_name} from the Zero Trust DPUDeployment selector"
+        oc label dpunodes.provisioning.dpu.nvidia.com "${node_name}" \
+            -n dpf-operator-system \
+            feature.node.kubernetes.io/dpu-enabled-
+        wait_for_zero_trust_dpu_removal "${node_name}" || return 1
+
+        log [INFO] "Deleting DPUNode ${node_name}"
+        oc delete dpunodes.provisioning.dpu.nvidia.com "${node_name}" \
+            -n dpf-operator-system \
+            --ignore-not-found \
+            --timeout=10m
+    else
+        log [INFO] "DPUNode ${node_name} is already absent"
+    fi
+
+    log [INFO] "Deleting DPUDevice ${serial}"
+    oc delete dpudevices.provisioning.dpu.nvidia.com "${serial}" \
+        -n dpf-operator-system \
+        --ignore-not-found \
+        --timeout=10m
+
+    log [INFO] "Zero Trust DPU ${serial} scale-in completed"
+}
+
 function deploy_argocd() {
     log [INFO] "Deploying GitOps operator..."
 
@@ -1063,6 +1165,9 @@ function main() {
             scale-out-zero-trust-dpus)
                 scale_out_zero_trust_dpus
                 ;;
+            scale-in-zero-trust-dpu)
+                scale_in_zero_trust_dpu "$@"
+                ;;
             deploy-hypershift)
                 deploy_hypershift
                 ;;
@@ -1083,7 +1188,7 @@ function main() {
                 ;;
             *)
                 log [INFO] "Unknown command: $command"
-                log [INFO] "Available commands: deploy-nfd, deploy-metallb, deploy-argocd, deploy-maintenance-operator, apply-dpf, scale-out-zero-trust-dpus, deploy-hypershift, deploy-dpfhcp, deploy-hosted-cluster, deploy-dpf-hcp-provisioner-operator, delete-dpf-hcp-provisioner-operator, create-dpfhcpprovisioner-secrets, create-dpfhcpprovisioner-cr"
+                log [INFO] "Available commands: deploy-nfd, deploy-metallb, deploy-argocd, deploy-maintenance-operator, apply-dpf, scale-out-zero-trust-dpus, scale-in-zero-trust-dpu, deploy-hypershift, deploy-dpfhcp, deploy-hosted-cluster, deploy-dpf-hcp-provisioner-operator, delete-dpf-hcp-provisioner-operator, create-dpfhcpprovisioner-secrets, create-dpfhcpprovisioner-cr"
                 exit 1
                 ;;
         esac
