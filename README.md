@@ -73,11 +73,12 @@ Complete these manual steps on every DPU BMC before running `make all-zt`:
    - `scanning` (default): set `ZT_DPU_BMC_IP_RANGE_START` and
      `ZT_DPU_BMC_IP_RANGE_END`. A `DPUDiscovery` scans the range and creates
      the `DPUDevice` and `DPUNode` resources. Numbered `DPU<N>_BMC_IP`
-     variables are not required. Only one inclusive IP range is supported;
-     space- or comma-separated IP lists and multiple ranges are not. The DPU
-     addresses may have gaps within that range—for example, a range from
-     `192.168.1.3` through `192.168.1.8` can contain DPUs at `.3`, `.6`, and
-     `.8`, but every address in the range is scanned.
+     variables are not required. Scans repeat every three minutes by default;
+     override this with `ZT_DPU_DISCOVERY_SCAN_INTERVAL`. Only one inclusive
+     IP range is supported; space- or comma-separated IP lists and multiple
+     ranges are not. The DPU addresses may have gaps within that range—for
+     example, a range from `192.168.1.3` through `192.168.1.8` can contain DPUs
+     at `.3`, `.6`, and `.8`, but every address in the range is scanned.
    - `static`: pair every serial with its BMC address, for example
      `DPU1_SERIAL=mt2437600n0p` and `DPU1_BMC_IP=10.6.136.33`. The automation
      creates a dedicated `DPUDevice` and `DPUNode` for every numbered pair.
@@ -94,6 +95,26 @@ Numbered DPUs and workers are paired by suffix: `DPU1_SERIAL` uses the
 `WORKER_1_BMC_*` values, `DPU2_SERIAL` uses `WORKER_2_BMC_*`, and so on.
 `PowerCycle` uses `chassis power cycle`; the warm-reset methods use
 `chassis power reset`; and `NoAction` exits without contacting the BMC.
+
+### Scaling Out Zero Trust DPUs
+
+Add the new numbered `DPU<N>_SERIAL` variables to the inputs used to generate
+`.env`. In static discovery mode, also add each matching `DPU<N>_BMC_IP`.
+Ensure `WORKER_COUNT` includes every physical worker associated with the
+configured DPUs and configure its numbered `WORKER_<N>_BMC_*` variables.
+Regenerate `.env`, then run:
+
+```bash
+source user.env
+make generate-env FORCE=true
+make scale-out-zt-dpus
+```
+
+The target checks every configured physical worker and powers on only those that
+are off. It then waits for every configured DPU Redfish endpoint, refreshes the
+HBN per-DPU configuration, and creates missing DPU inventory objects. Existing
+IPAM, NAD, interface, and service-chain resources automatically reconcile for
+the new DPUs.
 
 ### Zero Trust Single-Node OpenShift
 
