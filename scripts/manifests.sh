@@ -250,6 +250,7 @@ prepare_zero_trust_objects() {
             "$MANIFESTS_DIR/dpf-installation/zero-trust/dpudiscovery.yaml" \
             "${inventory_dir}/dpudiscovery.yaml" \
             "<ZT_DPU_DISCOVERY_NAME>" "$ZT_DPU_DISCOVERY_NAME" \
+            "<ZT_DPU_DISCOVERY_SCAN_INTERVAL>" "${ZT_DPU_DISCOVERY_SCAN_INTERVAL:-3m}" \
             "<ZT_DPU_BMC_IP_RANGE_START>" "$ZT_DPU_BMC_IP_RANGE_START" \
             "<ZT_DPU_BMC_IP_RANGE_END>" "$ZT_DPU_BMC_IP_RANGE_END"
         return

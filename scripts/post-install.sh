@@ -370,6 +370,34 @@ function apply_zero_trust_service_manifests() {
     print_zero_trust_dpu_provisioning_instructions
 }
 
+function update_zero_trust_hbn_configuration() {
+    if [ "${DPF_DEPLOYMENT_MODE}" != "zero-trust" ]; then
+        log [ERROR] "Zero Trust HBN configuration requires DPF_DEPLOYMENT_MODE=zero-trust"
+        return 1
+    fi
+
+    get_kubeconfig
+
+    local manifest="${GENERATED_ZT_SERVICE_DIR}/dpuservicetemplate-zero-trust.yaml"
+    log [INFO] "Applying Zero Trust HBN configuration"
+    retry 5 30 apply_manifest "${manifest}" true
+
+    local per_dpu_values serial serial_variable
+    per_dpu_values=$(oc get dpuserviceconfiguration.svc.dpu.nvidia.com hbn \
+        -n dpf-operator-system \
+        -o jsonpath='{.spec.serviceConfiguration.helmChart.values.configuration.perDPUValuesYAML}')
+    while IFS= read -r serial_variable; do
+        serial="${!serial_variable:-}"
+        [ -n "${serial}" ] || continue
+        if ! grep -Fq "hostnamePattern: \"dpu-node-${serial}*\"" <<< "${per_dpu_values}"; then
+            log [ERROR] "Applied HBN configuration is missing ${serial_variable}=${serial}"
+            return 1
+        fi
+    done < <(list_dpu_serial_variables)
+
+    log [INFO] "Zero Trust HBN per-DPU configuration applied successfully"
+}
+
 # Function to update BFB manifest
 function update_bfb_manifest() {
     log [INFO] "Updating BFB manifest..."
@@ -787,7 +815,7 @@ function redeploy() {
 # If script is executed directly (not sourced), run the appropriate function
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     if [ $# -lt 1 ]; then
-        log [ERROR] "Usage: $0 <prepare|apply|prepare-zt-services|apply-zt-services|redeploy|observability|generate-overrides>"
+        log [ERROR] "Usage: $0 <prepare|apply|prepare-zt-services|apply-zt-services|update-zt-hbn-config|print-zt-provisioning-instructions|redeploy|observability|generate-overrides>"
         exit 1
     fi
 
@@ -804,6 +832,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         apply-zt-services)
             apply_zero_trust_service_manifests
             ;;
+        update-zt-hbn-config)
+            update_zero_trust_hbn_configuration
+            ;;
+        print-zt-provisioning-instructions)
+            get_kubeconfig
+            print_zero_trust_dpu_provisioning_instructions
+            ;;
         redeploy)
             redeploy
             ;;
@@ -815,7 +850,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             ;;
         *)
             log [ERROR] "Unknown command: $1"
-            log [ERROR] "Available commands: prepare, apply, prepare-zt-services, apply-zt-services, redeploy, observability, generate-overrides"
+            log [ERROR] "Available commands: prepare, apply, prepare-zt-services, apply-zt-services, update-zt-hbn-config, print-zt-provisioning-instructions, redeploy, observability, generate-overrides"
             exit 1
             ;;
     esac

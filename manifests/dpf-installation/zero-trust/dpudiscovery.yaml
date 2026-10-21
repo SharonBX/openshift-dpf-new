@@ -4,6 +4,7 @@ metadata:
   name: <ZT_DPU_DISCOVERY_NAME>
   namespace: dpf-operator-system
 spec:
+  scanInterval: <ZT_DPU_DISCOVERY_SCAN_INTERVAL>
   ipRangeSpec:
     ipRange:
       startIP: <ZT_DPU_BMC_IP_RANGE_START>

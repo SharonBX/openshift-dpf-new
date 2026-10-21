@@ -531,6 +531,7 @@ function apply_zero_trust_dpu_discovery() {
 }
 
 function apply_static_zero_trust_dpu_inventory() {
+    local apply_always="${1:-true}"
     local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
     local serial_variable serial device_manifest node_manifest
 
@@ -545,16 +546,18 @@ function apply_static_zero_trust_dpu_inventory() {
             log [ERROR] "Static Zero Trust inventory manifests not found for ${serial}"
             return 1
         fi
-        apply_manifest "${device_manifest}" true || return 1
-        apply_manifest "${node_manifest}" true || return 1
+        apply_manifest "${device_manifest}" "${apply_always}" || return 1
+        apply_manifest "${node_manifest}" "${apply_always}" || return 1
     done < <(list_dpu_serial_variables)
 }
 
 function apply_zero_trust_dpu_inventory_resources() {
+    local apply_always="${1:-true}"
+
     if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ]; then
         apply_zero_trust_dpu_discovery
     else
-        apply_static_zero_trust_dpu_inventory
+        apply_static_zero_trust_dpu_inventory "${apply_always}"
     fi
 }
 
@@ -678,7 +681,9 @@ function configure_zero_trust_dpunodes() {
 }
 
 function configure_zero_trust_dpu_inventory() {
-    apply_zero_trust_dpu_inventory_resources || return 1
+    local apply_always="${1:-true}"
+
+    apply_zero_trust_dpu_inventory_resources "${apply_always}" || return 1
     wait_for_zero_trust_dpu_inventory_resources || return 1
     apply_zero_trust_dpunode_reboot_resources || return 1
     configure_zero_trust_dpunodes || return 1
@@ -686,6 +691,17 @@ function configure_zero_trust_dpu_inventory() {
     log [INFO] "Zero Trust DPU inventory configuration completed"
     oc get dpudevices.provisioning.dpu.nvidia.com -n dpf-operator-system
     oc get dpunodes.provisioning.dpu.nvidia.com -n dpf-operator-system
+}
+
+function scale_out_zero_trust_dpus() {
+    if [ "${DPF_DEPLOYMENT_MODE}" != "zero-trust" ]; then
+        log [ERROR] "DPU scale-out requires DPF_DEPLOYMENT_MODE=zero-trust"
+        return 1
+    fi
+
+    get_kubeconfig
+    wait_for_dpf_provisioning_api
+    configure_zero_trust_dpu_inventory false
 }
 
 function deploy_argocd() {
@@ -1027,6 +1043,9 @@ function main() {
             apply-dpf)
                 apply_dpf
                 ;;
+            scale-out-zero-trust-dpus)
+                scale_out_zero_trust_dpus
+                ;;
             deploy-hypershift)
                 deploy_hypershift
                 ;;
@@ -1047,7 +1066,7 @@ function main() {
                 ;;
             *)
                 log [INFO] "Unknown command: $command"
-                log [INFO] "Available commands: deploy-nfd, deploy-metallb, deploy-argocd, deploy-maintenance-operator, apply-dpf, deploy-hypershift, deploy-dpfhcp, deploy-hosted-cluster, deploy-dpf-hcp-provisioner-operator, delete-dpf-hcp-provisioner-operator, create-dpfhcpprovisioner-secrets, create-dpfhcpprovisioner-cr"
+                log [INFO] "Available commands: deploy-nfd, deploy-metallb, deploy-argocd, deploy-maintenance-operator, apply-dpf, scale-out-zero-trust-dpus, deploy-hypershift, deploy-dpfhcp, deploy-hosted-cluster, deploy-dpf-hcp-provisioner-operator, delete-dpf-hcp-provisioner-operator, create-dpfhcpprovisioner-secrets, create-dpfhcpprovisioner-cr"
                 exit 1
                 ;;
         esac

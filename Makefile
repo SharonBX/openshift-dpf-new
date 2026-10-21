@@ -253,6 +253,13 @@ prepare-zt-dpu-services: validate-zt-mode
 deploy-zt-dpu-services: prepare-zt-dpu-services
 	@$(POST_INSTALL_SCRIPT) apply-zt-services
 
+.PHONY: scale-out-zt-dpus
+scale-out-zt-dpus: validate-zt-mode prepare-dpf-manifests prepare-zt-dpu-services
+	@$(WORKER_SCRIPT) poweron-workers
+	@$(POST_INSTALL_SCRIPT) update-zt-hbn-config
+	@$(DPF_SCRIPT) scale-out-zero-trust-dpus
+	@$(POST_INSTALL_SCRIPT) print-zt-provisioning-instructions
+
 .PHONY: deploy-observability
 deploy-observability:
 	@$(POST_INSTALL_SCRIPT) observability
@@ -582,6 +589,7 @@ help:
 	@echo "  deploy-dpu-services - Deploy DPU services to the cluster"
 	@echo "  run-custom-postinstall-script - Run CUSTOM_POSTINSTALL_SCRIPT (file or http(s) URL, with args); also last make all step"
 	@echo "  deploy-zt-dpu-services - Apply and verify Zero Trust services and hosted-cluster RBAC"
+	@echo "  scale-out-zt-dpus - Add configured Zero Trust DPUs and refresh per-DPU services"
 	@echo "  enable-kata       - OSC (inert KataConfig) + kata-coldplug on worker-dpu (also last make all step when KATA_ENABLED=true)"
 	@echo "  enable-argus      - Install the DOCA Argus DPU service (requires ARGUS_ENABLED=true)"
 	@echo "  deploy-kata-test  - Deploy kata-dpu-test Deployment (KATA_TEST_REPLICAS, default 1)"
